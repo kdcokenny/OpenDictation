@@ -34,18 +34,17 @@ Download the DMG, open it, and drag Open Dictation to your Applications folder.
 
 ### First Launch
 
-Since Open Dictation is distributed outside the Mac App Store, macOS will show a security warning on first launch.
+Since Open Dictation is distributed outside the Mac App Store, macOS will block it on first launch.
 
 **To open the app:**
 
-1. **Right-click** (or Control-click) on Open Dictation in your Applications folder
-2. Select **"Open"** from the context menu
-3. Click **"Open"** in the dialog that appears
+1. Double-click Open Dictation to launch it (macOS will block it)
+2. Open **System Settings → Privacy & Security**
+3. Scroll down to the Security section
+4. Click **"Open Anyway"** next to the message about Open Dictation being blocked
+5. Click **"Open"** in the confirmation dialog
 
 You only need to do this once. After that, the app opens normally.
-
-> [!TIP]
-> Alternatively, go to **System Settings → Privacy & Security** and click **"Open Anyway"** after attempting to launch the app.
 
 ### Homebrew
 
