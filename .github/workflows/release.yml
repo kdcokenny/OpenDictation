@@ -80,6 +80,16 @@ jobs:
             echo "Copied Sparkle framework"
           fi
           
+          # Re-sign the app bundle (required after manual bundle construction)
+          # The Swift build creates a linker-signed executable, but we need to
+          # properly ad-hoc sign the entire bundle with sealed resources
+          echo "Signing app bundle..."
+          codesign --deep --force -s - "$APP_BUNDLE"
+          
+          # Verify the signature is valid
+          echo "Verifying signature..."
+          codesign --verify --deep --strict "$APP_BUNDLE"
+          
           echo "App bundle created at: $APP_BUNDLE"
           du -sh "$APP_BUNDLE"
       
