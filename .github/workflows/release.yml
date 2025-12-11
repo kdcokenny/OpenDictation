@@ -23,6 +23,9 @@ jobs:
         with:
           xcode-version: latest-stable
       
+      - name: Install xcodegen
+        run: brew install xcodegen
+      
       - name: Get version from tag
         id: version
         run: |
@@ -43,86 +46,48 @@ jobs:
       - name: Download models
         run: make models
       
-      - name: Build release
-        run: |
-          swift build -c release
-          echo "Build complete"
+      - name: Generate Xcode project
+        run: xcodegen generate
       
-      - name: Create app bundle
+      - name: Build with xcodebuild
         run: |
-          APP_NAME="Open Dictation"
-          APP_BUNDLE="$RUNNER_TEMP/$APP_NAME.app"
-          RESOURCE_BUNDLE=".build/release/OpenDictation_OpenDictation.bundle"
+          xcodebuild -project OpenDictation.xcodeproj \
+            -scheme OpenDictation \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            build
           
-          mkdir -p "$APP_BUNDLE/Contents/MacOS"
-          mkdir -p "$APP_BUNDLE/Contents/Resources"
-          mkdir -p "$APP_BUNDLE/Contents/Frameworks"
+          echo "Build complete"
+          ls -la "$RUNNER_TEMP/DerivedData/Build/Products/Release/"
+      
+      - name: Sign app bundle
+        run: |
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release/OpenDictation.app"
           
-          # Copy executable
-          cp .build/release/OpenDictation "$APP_BUNDLE/Contents/MacOS/"
-          
-          # Copy Info.plist
-          cp Sources/OpenDictation/Info.plist "$APP_BUNDLE/Contents/"
-          
-          # Copy resource bundle to app root (SPM's Bundle.module looks for it here)
-          if [ -d "$RESOURCE_BUNDLE" ]; then
-            cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/"
-            echo "Copied resource bundle to app root"
-          else
-            echo "ERROR: Resource bundle not found at $RESOURCE_BUNDLE"
-            exit 1
-          fi
-          
-          # Copy Sparkle framework
-          SPARKLE_FRAMEWORK=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
-          if [ -d "$SPARKLE_FRAMEWORK" ]; then
-            cp -R "$SPARKLE_FRAMEWORK" "$APP_BUNDLE/Contents/Frameworks/"
-            echo "Copied Sparkle framework"
-          fi
-          
-          # Copy whisper framework (built by SPM from the xcframework)
-          WHISPER_FRAMEWORK=".build/arm64-apple-macosx/release/whisper.framework"
-          if [ -d "$WHISPER_FRAMEWORK" ]; then
-            cp -R "$WHISPER_FRAMEWORK" "$APP_BUNDLE/Contents/Frameworks/"
-            echo "Copied whisper framework"
-          else
-            echo "ERROR: whisper.framework not found at $WHISPER_FRAMEWORK"
-            exit 1
-          fi
-          
-          # Add rpath so the executable can find frameworks in Contents/Frameworks
-          install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_BUNDLE/Contents/MacOS/OpenDictation"
-          
-          # Re-sign the app bundle (required after manual bundle construction and rpath modification)
+          # Sign the app (ad-hoc signing)
           echo "Signing app bundle..."
-          codesign --deep --force -s - "$APP_BUNDLE"
+          codesign --deep --force -s - "$APP_PATH"
           
-          # Verify the signature is valid
+          # Verify signature
           echo "Verifying signature..."
-          codesign --verify --deep --strict "$APP_BUNDLE"
+          codesign --verify --deep --strict "$APP_PATH"
           
-          # List frameworks for verification
-          echo "Frameworks in bundle:"
-          ls -la "$APP_BUNDLE/Contents/Frameworks/"
-          
-          echo "App bundle created at: $APP_BUNDLE"
-          du -sh "$APP_BUNDLE"
+          echo "App signed successfully"
       
       - name: Create DMG
         run: |
-          APP_NAME="Open Dictation"
           VERSION="${{ steps.version.outputs.VERSION }}"
           DMG_NAME="OpenDictation-$VERSION.dmg"
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release/OpenDictation.app"
           
-          hdiutil create -volname "$APP_NAME" \
-            -srcfolder "$RUNNER_TEMP/$APP_NAME.app" \
+          hdiutil create -volname "Open Dictation" \
+            -srcfolder "$APP_PATH" \
             -ov -format UDZO \
             "$RUNNER_TEMP/$DMG_NAME"
           
           echo "DMG_PATH=$RUNNER_TEMP/$DMG_NAME" >> $GITHUB_ENV
           echo "DMG_NAME=$DMG_NAME" >> $GITHUB_ENV
           
-          # Show DMG size for verification
           ls -lh "$RUNNER_TEMP/$DMG_NAME"
       
       - name: Sign update with Sparkle
@@ -135,8 +100,17 @@ jobs:
             exit 0
           fi
           
-          SPARKLE_BIN=".build/artifacts/sparkle/Sparkle/bin"
-          echo "$SPARKLE_KEY" > "$RUNNER_TEMP/sparkle_key"
+          # Use deterministic path for Sparkle tools (following CodeEdit/TimeMachineStatus pattern)
+          SPARKLE_BIN="$RUNNER_TEMP/DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin"
+          
+          if [ ! -f "$SPARKLE_BIN/sign_update" ]; then
+            echo "Error: Sparkle sign_update not found at $SPARKLE_BIN"
+            echo "SPARKLE_SIGNATURE=" >> $GITHUB_ENV
+            exit 1
+          fi
+          
+          echo "Using Sparkle tools from: $SPARKLE_BIN"
+          echo -n "$SPARKLE_KEY" > "$RUNNER_TEMP/sparkle_key"
           
           SIGNATURE=$("$SPARKLE_BIN/sign_update" --ed-key-file "$RUNNER_TEMP/sparkle_key" "$DMG_PATH" | grep "sparkle:edSignature" | cut -d'"' -f2)
           echo "SPARKLE_SIGNATURE=$SIGNATURE" >> $GITHUB_ENV

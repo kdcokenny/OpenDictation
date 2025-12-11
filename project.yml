@@ -1,0 +1,69 @@
+name: OpenDictation
+options:
+  bundleIdPrefix: com.opendictation
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "16.0"
+  generateEmptyDirectories: true
+  groupSortPosition: top
+
+settings:
+  base:
+    PRODUCT_NAME: Open Dictation
+    PRODUCT_BUNDLE_IDENTIFIER: com.opendictation.app
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    INFOPLIST_FILE: Sources/OpenDictation/Info.plist
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGNING_ALLOWED: NO
+    ENABLE_HARDENED_RUNTIME: NO
+    SWIFT_VERSION: "5.9"
+
+packages:
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    from: "2.0.0"
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: "2.8.1"
+
+targets:
+  OpenDictation:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/OpenDictation
+        excludes:
+          - Info.plist
+          - Resources/**
+      - path: Sources/OpenDictation/Resources/Sounds
+        buildPhase: resources
+        type: folder
+      - path: Sources/OpenDictation/Resources/Models
+        buildPhase: resources
+        type: folder
+    settings:
+      base:
+        PRODUCT_NAME: OpenDictation
+        PRODUCT_BUNDLE_IDENTIFIER: com.opendictation.app
+        INFOPLIST_FILE: Sources/OpenDictation/Info.plist
+        LD_RUNPATH_SEARCH_PATHS: 
+          - "@executable_path/../Frameworks"
+          - "@loader_path/../Frameworks"
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(inherited)"
+          - "deps/whisper.cpp/build-apple/whisper.xcframework/macos-arm64_x86_64"
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS:
+          - "$(inherited)"
+          - "XCODE_BUILD"
+    dependencies:
+      - package: KeyboardShortcuts
+      - package: Sparkle
+        product: Sparkle
+      - framework: deps/whisper.cpp/build-apple/whisper.xcframework
+        embed: true
+    preBuildScripts: []
+    postBuildScripts: []

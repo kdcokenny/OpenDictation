@@ -11,7 +11,7 @@ MODELS_DIR := Sources/OpenDictation/Resources/Models
 TINY_URL := https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
 SILERO_VAD_URL := https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
 
-.PHONY: all clean whisper models setup build check help dev reset
+.PHONY: all clean whisper models setup build check help dev reset release dmg run-release
 
 # Default target
 all: check setup build
@@ -102,29 +102,63 @@ reset:
 	@rm -rf ~/Library/Application\ Support/com.opendictation/Models/
 	@echo "Reset complete. Run 'make run' to test fresh install flow."
 
+# Build release app using xcodebuild (same as CI)
+release:
+	@echo "Building release with xcodebuild..."
+	@command -v xcodegen >/dev/null 2>&1 || { echo "Installing xcodegen..."; brew install xcodegen; }
+	@xcodegen generate
+	@xcodebuild -project OpenDictation.xcodeproj \
+		-scheme OpenDictation \
+		-configuration Release \
+		-derivedDataPath build \
+		build
+	@echo ""
+	@echo "Release build complete!"
+	@echo "App: build/Build/Products/Release/OpenDictation.app"
+
+# Create DMG from release build
+dmg: release
+	@echo "Creating DMG..."
+	@codesign --deep --force -s - build/Build/Products/Release/OpenDictation.app
+	@rm -f ~/Downloads/OpenDictation-local.dmg
+	@hdiutil create -volname "Open Dictation" \
+		-srcfolder build/Build/Products/Release/OpenDictation.app \
+		-ov -format UDZO \
+		~/Downloads/OpenDictation-local.dmg
+	@echo ""
+	@echo "DMG created: ~/Downloads/OpenDictation-local.dmg"
+
+# Run the release build
+run-release: release
+	@open build/Build/Products/Release/OpenDictation.app
+
 # Help
 help:
 	@echo "OpenDictation Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  check      Check if required CLI tools are installed"
-	@echo "  whisper    Clone and build whisper.cpp XCFramework"
-	@echo "  models     Download bundled Whisper models"
-	@echo "  setup      Build framework + download models (run this first)"
-	@echo "  build      Build the Swift package"
-	@echo "  run        Run the built app"
-	@echo "  dev        Setup + build + run (for development)"
-	@echo "  all        Run check + setup + build (default)"
-	@echo "  clean      Clean Swift build artifacts"
-	@echo "  clean-all  Clean + remove deps directory"
-	@echo "  reset      Reset app state (clear prefs + downloaded models)"
-	@echo "  help       Show this help message"
+	@echo "  check       Check if required CLI tools are installed"
+	@echo "  whisper     Clone and build whisper.cpp XCFramework"
+	@echo "  models      Download bundled Whisper models"
+	@echo "  setup       Build framework + download models (run this first)"
+	@echo "  build       Build the Swift package (debug)"
+	@echo "  run         Run the debug build"
+	@echo "  dev         Setup + build + run (for development)"
+	@echo "  all         Run check + setup + build (default)"
+	@echo "  clean       Clean Swift build artifacts"
+	@echo "  clean-all   Clean + remove deps directory"
+	@echo "  reset       Reset app state (clear prefs + downloaded models)"
+	@echo "  release     Build release app using xcodebuild (same as CI)"
+	@echo "  dmg         Create DMG from release build"
+	@echo "  run-release Run the release build"
+	@echo "  help        Show this help message"
 	@echo ""
-	@echo "Quick start:"
+	@echo "Quick start (development):"
 	@echo "  make setup    # First time: build framework + download models"
-	@echo "  make build    # Build the app"
+	@echo "  make build    # Build the app (debug)"
 	@echo "  make run      # Run the app"
 	@echo ""
-	@echo "Testing:"
-	@echo "  make reset    # Clear all app state for fresh install testing"
-	@echo "  make run      # Run and observe auto-selection behavior"
+	@echo "Release testing:"
+	@echo "  make release     # Build release version (same as CI)"
+	@echo "  make dmg         # Create DMG for testing"
+	@echo "  make run-release # Run release build directly"
