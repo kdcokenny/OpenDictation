@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+env:
+  WHISPER_VERSION: "1.8.2"
+
 jobs:
   build-and-release:
     runs-on: macos-14
@@ -27,8 +30,14 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Building version: $VERSION"
       
-      - name: Build whisper.cpp XCFramework
-        run: make whisper
+      - name: Download whisper.cpp XCFramework
+        run: |
+          mkdir -p deps/whisper.cpp/build-apple
+          curl -L -o whisper-xcframework.zip \
+            "https://github.com/ggml-org/whisper.cpp/releases/download/v$WHISPER_VERSION/whisper-v$WHISPER_VERSION-xcframework.zip"
+          unzip -q whisper-xcframework.zip -d deps/whisper.cpp/build-apple
+          rm whisper-xcframework.zip
+          echo "Downloaded whisper.cpp v$WHISPER_VERSION xcframework"
       
       - name: Download models
         run: make models
@@ -42,21 +51,36 @@ jobs:
         run: |
           APP_NAME="Open Dictation"
           APP_BUNDLE="$RUNNER_TEMP/$APP_NAME.app"
+          RESOURCE_BUNDLE=".build/release/OpenDictation_OpenDictation.bundle"
           
           mkdir -p "$APP_BUNDLE/Contents/MacOS"
           mkdir -p "$APP_BUNDLE/Contents/Resources"
           mkdir -p "$APP_BUNDLE/Contents/Frameworks"
           
+          # Copy executable
           cp .build/release/OpenDictation "$APP_BUNDLE/Contents/MacOS/"
-          cp Sources/OpenDictation/Info.plist "$APP_BUNDLE/Contents/"
-          cp -R .build/release/OpenDictation_OpenDictation.bundle/Contents/Resources/* "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
           
+          # Copy Info.plist
+          cp Sources/OpenDictation/Info.plist "$APP_BUNDLE/Contents/"
+          
+          # Copy resources (SPM bundle has flat structure, not Contents/Resources)
+          if [ -d "$RESOURCE_BUNDLE" ]; then
+            cp -R "$RESOURCE_BUNDLE"/* "$APP_BUNDLE/Contents/Resources/"
+            echo "Copied resources from $RESOURCE_BUNDLE"
+            ls -la "$APP_BUNDLE/Contents/Resources/"
+          else
+            echo "Warning: Resource bundle not found at $RESOURCE_BUNDLE"
+          fi
+          
+          # Copy Sparkle framework
           SPARKLE_FRAMEWORK=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
           if [ -d "$SPARKLE_FRAMEWORK" ]; then
             cp -R "$SPARKLE_FRAMEWORK" "$APP_BUNDLE/Contents/Frameworks/"
+            echo "Copied Sparkle framework"
           fi
           
           echo "App bundle created at: $APP_BUNDLE"
+          du -sh "$APP_BUNDLE"
       
       - name: Create DMG
         run: |
@@ -71,6 +95,9 @@ jobs:
           
           echo "DMG_PATH=$RUNNER_TEMP/$DMG_NAME" >> $GITHUB_ENV
           echo "DMG_NAME=$DMG_NAME" >> $GITHUB_ENV
+          
+          # Show DMG size for verification
+          ls -lh "$RUNNER_TEMP/$DMG_NAME"
       
       - name: Sign update with Sparkle
         env:
@@ -102,9 +129,9 @@ jobs:
             exit 0
           fi
           
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
-          PUB_DATE=$(date -R)
+          export VERSION="${{ steps.version.outputs.VERSION }}"
+          export BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+          export PUB_DATE=$(date -R)
           
           python3 << 'PYTHON_SCRIPT'
           import xml.etree.ElementTree as ET
