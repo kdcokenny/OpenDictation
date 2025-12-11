@@ -1,137 +1,97 @@
-# Open Dictation
+<div align="center">
+  <h1>Open Dictation</h1>
+  <p><strong>Voice-to-text for any macOS app, powered by local or cloud AI</strong></p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
-[![Swift](https://img.shields.io/badge/Swift-5.9-F05138.svg?logo=swift&logoColor=white)](https://developer.apple.com/swift/)
+  <p>
+    <a href="https://github.com/kdcokenny/OpenDictation/releases/latest"><img src="https://img.shields.io/badge/download-latest-brightgreen?style=for-the-badge" alt="Download"></a>
+    <img src="https://img.shields.io/badge/platform-macOS-blue?style=for-the-badge" alt="Platform">
+    <img src="https://img.shields.io/badge/requirements-macOS%2014%2B-fa4e49?style=for-the-badge" alt="Requirements">
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge" alt="License"></a>
+  </p>
 
-A lightweight, native macOS dictation app powered by your choice of transcription backend.
+  <!-- TODO: Add screenshot or demo GIF -->
+  <!-- <img src="screenshot.png" width="600" alt="Open Dictation Demo"> -->
+</div>
 
-Open Dictation brings voice-to-text to any application with a simple hotkey. It's designed to feel at home on macOS—a floating panel that stays out of your way, audio feedback that matches system conventions, and text insertion that just works.
+---
 
-## Features
+## Installation
 
-- **Native Experience:** A floating `NSPanel` that appears without stealing focus, with smooth animations and system-appropriate visual design.
-- **Flexible Backends:**
-  - **Local:** Run Whisper models on-device for private, offline transcription.
-  - **Cloud:** Connect to any OpenAI-compatible API (OpenAI, Groq, etc.) for fast, accurate results.
-- **Smart Text Insertion:** Automatically pastes transcribed text into the active field. Falls back to clipboard when direct insertion isn't available.
-- **Audio Feedback:** Start/stop sounds and volume ducking during recording, matching macOS conventions.
+### Requirements
 
-## Getting Started
+- macOS 14 (Sonoma) or later
+- Apple Silicon or Intel Mac
 
-### Prerequisites
+> [!IMPORTANT]
+> Open Dictation requires **Accessibility** and **Microphone** permissions.
+> You'll be prompted to grant these on first launch.
 
-- macOS 14.0 (Sonoma) or later
-- Xcode 15.0+
+### Download
 
-### Permissions
+[![Download DMG](https://img.shields.io/badge/Download-DMG-blue?style=for-the-badge&logo=apple)](https://github.com/kdcokenny/OpenDictation/releases/latest/download/OpenDictation.dmg)
 
-Open Dictation requires:
-- **Accessibility:** To detect text fields and insert transcribed text
-- **Microphone:** To capture audio for transcription
+Download the DMG, open it, and drag Open Dictation to your Applications folder.
 
-### Installation
+### Homebrew
 
-1. Clone the repository
-   ```bash
-   git clone https://github.com/yourusername/open-dictation.git
-   cd open-dictation
-   ```
+```bash
+# Coming soon
+# brew install --cask open-dictation
+```
 
-2. Build the whisper.cpp framework and download models
-   ```bash
-   make setup
-   ```
-   This clones whisper.cpp, builds the XCFramework, and downloads:
-   - `ggml-tiny.bin` (~75MB) - Default transcription model (multilingual)
-   - `ggml-silero-v5.1.2.bin` (~2MB) - Voice Activity Detection model
+### Build from Source
 
-3. Build the app
-   ```bash
-   make build
-   ```
-
-4. Run
-   ```bash
-   make run
-   ```
-
-**Quick start:** Run `make all` to do steps 2-3 in one command.
+```bash
+git clone https://github.com/kdcokenny/OpenDictation.git
+cd OpenDictation
+make setup  # Downloads models and builds whisper.cpp
+make build  # Builds the app
+make run    # Run the app
+```
 
 See `make help` for all available targets.
 
+---
+
 ## Usage
 
-1. Press `Option + Space` to start recording
+1. Press **Option + Space** to start recording
 2. Speak your text
-3. Press `Option + Space` again to stop and transcribe
-4. Text is automatically inserted (or copied to clipboard)
+3. Press **Option + Space** again to stop and transcribe
+4. Text is automatically inserted into the active field
 
-Press `Escape` at any time to cancel.
+Press **Escape** at any time to cancel.
+
+---
 
 ## Configuration
 
-Open the Settings window from the menu bar to configure:
+Open **Settings** from the menu bar icon to configure:
 
-- **Hotkey:** Customize the activation shortcut
-- **Transcription Mode:** Local (offline) or Cloud (API-based)
-- **API Key:** Your OpenAI-compatible API key (Cloud mode)
-- **Language:** Choose from 50+ supported languages or auto-detect
+| Setting | Description |
+|---------|-------------|
+| **Hotkey** | Customize the activation shortcut |
+| **Mode** | Local (offline, private) or Cloud (API-based) |
+| **API Key** | Your OpenAI-compatible API key (Cloud mode) |
+| **Language** | 50+ languages or auto-detect |
 
 ### Model Storage
 
-Downloaded Whisper models are stored in:
-```
-~/Library/Application Support/com.opendictation/Models/
-```
+Whisper models are stored in `~/Library/Application Support/com.opendictation/Models/`. The app automatically selects the best model for your system.
 
-The bundled `ggml-tiny` model is copied here on first launch. The app automatically selects the best model for your system. You can manually select models in Advanced Settings or delete unused ones to free disk space.
+---
 
-## Releasing
+## Features
 
-Open Dictation uses [Sparkle](https://sparkle-project.org/) for automatic updates.
+- **Native macOS experience** — Floating panel that doesn't steal focus
+- **Local transcription** — Run Whisper models on-device for privacy
+- **Cloud transcription** — Connect to OpenAI, Groq, or any compatible API
+- **Smart text insertion** — Automatically pastes into the active field
+- **Audio feedback** — Start/stop sounds matching macOS conventions
+- **Automatic updates** — Stay up to date via Sparkle
 
-### One-Time Setup (Maintainers)
-
-1. Generate an EdDSA key pair:
-   ```bash
-   brew install --cask sparkle
-   generate_keys
-   ```
-
-2. Copy the public key to `Sources/OpenDictation/Info.plist`:
-   ```xml
-   <key>SUPublicEDKey</key>
-   <string>YOUR_PUBLIC_KEY_HERE</string>
-   ```
-
-3. Add the private key to GitHub Secrets as `SPARKLE_PRIVATE_KEY`
-
-### Creating a Release
-
-1. Tag the release:
-   ```bash
-   git tag v0.2.0-alpha
-   git push origin v0.2.0-alpha
-   ```
-
-2. The GitHub Actions workflow will:
-   - Build the app
-   - Create a signed DMG
-   - Update `appcast.xml`
-   - Create a GitHub Release
-
-Users will receive the update automatically (or can check manually via the menu bar).
-
-## Architecture
-
-| Component | Technology |
-| :--- | :--- |
-| Interface | SwiftUI + AppKit (`NSPanel` with non-activating behavior) |
-| Audio | AVFoundation with real-time level metering |
-| Transcription | Local Whisper / OpenAI-compatible APIs |
-| Text Insertion | Accessibility API with clipboard fallback |
+---
 
 ## License
 
-MIT
+[MIT](LICENSE)
