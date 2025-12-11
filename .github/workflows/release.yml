@@ -64,13 +64,13 @@ jobs:
           # Copy Info.plist
           cp Sources/OpenDictation/Info.plist "$APP_BUNDLE/Contents/"
           
-          # Copy resources (SPM bundle has flat structure, not Contents/Resources)
+          # Copy resource bundle to app root (SPM's Bundle.module looks for it here)
           if [ -d "$RESOURCE_BUNDLE" ]; then
-            cp -R "$RESOURCE_BUNDLE"/* "$APP_BUNDLE/Contents/Resources/"
-            echo "Copied resources from $RESOURCE_BUNDLE"
-            ls -la "$APP_BUNDLE/Contents/Resources/"
+            cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/"
+            echo "Copied resource bundle to app root"
           else
-            echo "Warning: Resource bundle not found at $RESOURCE_BUNDLE"
+            echo "ERROR: Resource bundle not found at $RESOURCE_BUNDLE"
+            exit 1
           fi
           
           # Copy Sparkle framework
