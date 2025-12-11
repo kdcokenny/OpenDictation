@@ -1,5 +1,6 @@
 import SwiftUI
 import KeyboardShortcuts
+import Sparkle
 
 /// Main settings view for Open Dictation.
 /// Provides configuration for shortcut, transcription mode, language, and API settings.
@@ -115,9 +116,12 @@ struct SettingsView: View {
             if transcriptionMode == .cloud {
                 cloudSettingsSection
             }
+            
+            // MARK: Updates Section
+            UpdatesSettingsSection()
         }
         .formStyle(.grouped)
-        .frame(width: 420, height: 400)
+        .frame(width: 420, height: 480)
         .onAppear {
             loadApiKey()
         }
@@ -376,6 +380,58 @@ struct AdvancedModelSettingsView: View {
             modelToDownload = model
             showDownloadAlert = true
         }
+    }
+}
+
+// MARK: - Updates Settings Section
+
+/// Settings section for automatic updates.
+/// Pattern from QuickRecorder/boring.notch - minimal @State with onChange sync.
+struct UpdatesSettingsSection: View {
+    private let updater: SPUUpdater
+    
+    @State private var automaticallyChecksForUpdates: Bool
+    @State private var automaticallyDownloadsUpdates: Bool
+    @ObservedObject private var updateService = UpdateService.shared
+    
+    init() {
+        self.updater = UpdateService.shared.updater
+        self._automaticallyChecksForUpdates = State(initialValue: UpdateService.shared.updater.automaticallyChecksForUpdates)
+        self._automaticallyDownloadsUpdates = State(initialValue: UpdateService.shared.updater.automaticallyDownloadsUpdates)
+    }
+    
+    var body: some View {
+        Section("Updates") {
+            Toggle("Automatically check for updates", isOn: $automaticallyChecksForUpdates)
+                .onChange(of: automaticallyChecksForUpdates) { _, newValue in
+                    updater.automaticallyChecksForUpdates = newValue
+                }
+            
+            Toggle("Automatically download and install", isOn: $automaticallyDownloadsUpdates)
+                .disabled(!automaticallyChecksForUpdates)
+                .onChange(of: automaticallyDownloadsUpdates) { _, newValue in
+                    updater.automaticallyDownloadsUpdates = newValue
+                }
+            
+            HStack {
+                Button("Check Now") {
+                    UpdateService.shared.checkForUpdates()
+                }
+                .disabled(!updateService.canCheckForUpdates)
+                
+                Spacer()
+                
+                Text(versionString)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+    
+    private var versionString: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "Version \(version) (build \(build))"
     }
 }
 

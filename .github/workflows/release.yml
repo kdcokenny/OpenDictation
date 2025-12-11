@@ -1,0 +1,193 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  WHISPER_VERSION: "1.8.2"
+
+jobs:
+  build-and-release:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      
+      - name: Get version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+      
+      - name: Download whisper.cpp XCFramework
+        run: |
+          mkdir -p deps/whisper.cpp
+          curl -L -o whisper-xcframework.zip \
+            "https://github.com/ggml-org/whisper.cpp/releases/download/v$WHISPER_VERSION/whisper-v$WHISPER_VERSION-xcframework.zip"
+          unzip -q whisper-xcframework.zip -d deps/whisper.cpp
+          rm whisper-xcframework.zip
+          ls -la deps/whisper.cpp/build-apple/
+          echo "Downloaded whisper.cpp v$WHISPER_VERSION xcframework"
+      
+      - name: Download models
+        run: make models
+      
+      - name: Build release
+        run: |
+          swift build -c release
+          echo "Build complete"
+      
+      - name: Create app bundle
+        run: |
+          APP_NAME="Open Dictation"
+          APP_BUNDLE="$RUNNER_TEMP/$APP_NAME.app"
+          RESOURCE_BUNDLE=".build/release/OpenDictation_OpenDictation.bundle"
+          
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
+          mkdir -p "$APP_BUNDLE/Contents/Resources"
+          mkdir -p "$APP_BUNDLE/Contents/Frameworks"
+          
+          # Copy executable
+          cp .build/release/OpenDictation "$APP_BUNDLE/Contents/MacOS/"
+          
+          # Copy Info.plist
+          cp Sources/OpenDictation/Info.plist "$APP_BUNDLE/Contents/"
+          
+          # Copy resources (SPM bundle has flat structure, not Contents/Resources)
+          if [ -d "$RESOURCE_BUNDLE" ]; then
+            cp -R "$RESOURCE_BUNDLE"/* "$APP_BUNDLE/Contents/Resources/"
+            echo "Copied resources from $RESOURCE_BUNDLE"
+            ls -la "$APP_BUNDLE/Contents/Resources/"
+          else
+            echo "Warning: Resource bundle not found at $RESOURCE_BUNDLE"
+          fi
+          
+          # Copy Sparkle framework
+          SPARKLE_FRAMEWORK=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+          if [ -d "$SPARKLE_FRAMEWORK" ]; then
+            cp -R "$SPARKLE_FRAMEWORK" "$APP_BUNDLE/Contents/Frameworks/"
+            echo "Copied Sparkle framework"
+          fi
+          
+          echo "App bundle created at: $APP_BUNDLE"
+          du -sh "$APP_BUNDLE"
+      
+      - name: Create DMG
+        run: |
+          APP_NAME="Open Dictation"
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          DMG_NAME="OpenDictation-$VERSION.dmg"
+          
+          hdiutil create -volname "$APP_NAME" \
+            -srcfolder "$RUNNER_TEMP/$APP_NAME.app" \
+            -ov -format UDZO \
+            "$RUNNER_TEMP/$DMG_NAME"
+          
+          echo "DMG_PATH=$RUNNER_TEMP/$DMG_NAME" >> $GITHUB_ENV
+          echo "DMG_NAME=$DMG_NAME" >> $GITHUB_ENV
+          
+          # Show DMG size for verification
+          ls -lh "$RUNNER_TEMP/$DMG_NAME"
+      
+      - name: Sign update with Sparkle
+        env:
+          SPARKLE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SPARKLE_KEY" ]; then
+            echo "SPARKLE_SIGNATURE=" >> $GITHUB_ENV
+            echo "Skipping Sparkle signing (no key configured)"
+            exit 0
+          fi
+          
+          SPARKLE_BIN=".build/artifacts/sparkle/Sparkle/bin"
+          echo "$SPARKLE_KEY" > "$RUNNER_TEMP/sparkle_key"
+          
+          SIGNATURE=$("$SPARKLE_BIN/sign_update" --ed-key-file "$RUNNER_TEMP/sparkle_key" "$DMG_PATH" | grep "sparkle:edSignature" | cut -d'"' -f2)
+          echo "SPARKLE_SIGNATURE=$SIGNATURE" >> $GITHUB_ENV
+          
+          rm "$RUNNER_TEMP/sparkle_key"
+      
+      - name: Get DMG size
+        run: |
+          DMG_SIZE=$(stat -f%z "$DMG_PATH")
+          echo "DMG_SIZE=$DMG_SIZE" >> $GITHUB_ENV
+      
+      - name: Update appcast.xml
+        run: |
+          if [ -z "$SPARKLE_SIGNATURE" ]; then
+            echo "Skipping appcast update (no signature)"
+            exit 0
+          fi
+          
+          export VERSION="${{ steps.version.outputs.VERSION }}"
+          export BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+          export PUB_DATE=$(date -R)
+          
+          python3 << 'PYTHON_SCRIPT'
+          import xml.etree.ElementTree as ET
+          import os
+          
+          version = os.environ['VERSION']
+          build = os.environ['BUILD_NUMBER']
+          pub_date = os.environ['PUB_DATE']
+          dmg_name = os.environ['DMG_NAME']
+          signature = os.environ['SPARKLE_SIGNATURE']
+          size = os.environ['DMG_SIZE']
+          
+          # Register Sparkle namespace
+          ET.register_namespace('sparkle', 'http://www.andymatuschak.org/xml-namespaces/sparkle')
+          ET.register_namespace('dc', 'http://purl.org/dc/elements/1.1/')
+          
+          tree = ET.parse('appcast.xml')
+          root = tree.getroot()
+          channel = root.find('channel')
+          
+          # Create new item
+          item = ET.SubElement(channel, 'item')
+          ET.SubElement(item, 'title').text = f'Version {version}'
+          ET.SubElement(item, 'pubDate').text = pub_date
+          ET.SubElement(item, '{http://www.andymatuschak.org/xml-namespaces/sparkle}version').text = build
+          ET.SubElement(item, '{http://www.andymatuschak.org/xml-namespaces/sparkle}shortVersionString').text = version
+          ET.SubElement(item, '{http://www.andymatuschak.org/xml-namespaces/sparkle}minimumSystemVersion').text = '14.0'
+          
+          enclosure = ET.SubElement(item, 'enclosure')
+          enclosure.set('url', f'https://github.com/kdcokenny/OpenDictation/releases/download/v{version}/{dmg_name}')
+          enclosure.set('{http://www.andymatuschak.org/xml-namespaces/sparkle}edSignature', signature)
+          enclosure.set('length', size)
+          enclosure.set('type', 'application/octet-stream')
+          
+          tree.write('appcast.xml', encoding='utf-8', xml_declaration=True)
+          print(f'Updated appcast.xml with version {version}')
+          PYTHON_SCRIPT
+      
+      - name: Commit appcast.xml
+        run: |
+          if [ -z "$SPARKLE_SIGNATURE" ]; then
+            echo "Skipping appcast commit (no signature)"
+            exit 0
+          fi
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          git commit -m "Update appcast for v${{ steps.version.outputs.VERSION }}"
+          git push origin HEAD:main
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.DMG_PATH }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.VERSION, 'alpha') || contains(steps.version.outputs.VERSION, 'beta') }}

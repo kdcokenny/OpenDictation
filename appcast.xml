@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>Open Dictation Updates</title>
+    <link>https://github.com/kdcokenny/OpenDictation</link>
+    <description>Updates for Open Dictation</description>
+    <language>en</language>
+    
+  <item><title>Version 0.1.0-alpha</title><pubDate>Thu, 11 Dec 2025 20:35:02 +0000</pubDate><sparkle:version>3</sparkle:version><sparkle:shortVersionString>0.1.0-alpha</sparkle:shortVersionString><sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion><enclosure url="https://github.com/kdcokenny/OpenDictation/releases/download/v0.1.0-alpha/OpenDictation-0.1.0-alpha.dmg" sparkle:edSignature="bwpOU6TShjvZxe62dmTiAuM0gyFpHrbYlLnb6H6uDta0tkW+XRJbvSA9heNXOG7HKFG+/0w7pyruSNCCO0GaDA==" length="74475429" type="application/octet-stream" /></item></channel>
+</rss>
