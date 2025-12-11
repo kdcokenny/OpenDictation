@@ -61,3 +61,9 @@ fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
 .DS_Store
+
+# whisper.cpp dependencies
+deps/
+
+# Large model files (downloaded via make setup)
+Sources/OpenDictation/Resources/Models/*.bin

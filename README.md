@@ -38,10 +38,27 @@ Open Dictation requires:
    cd open-dictation
    ```
 
-2. Build and run
+2. Build the whisper.cpp framework and download models
    ```bash
-   swift build
+   make setup
    ```
+   This clones whisper.cpp, builds the XCFramework, and downloads:
+   - `ggml-tiny.en.bin` (~75MB) - Default transcription model
+   - `ggml-silero-v5.1.2.bin` (~2MB) - Voice Activity Detection model
+
+3. Build the app
+   ```bash
+   make build
+   ```
+
+4. Run
+   ```bash
+   make run
+   ```
+
+**Quick start:** Run `make all` to do steps 2-3 in one command.
+
+See `make help` for all available targets.
 
 ## Usage
 
@@ -57,9 +74,19 @@ Press `Escape` at any time to cancel.
 Open the Settings window from the menu bar to configure:
 
 - **Hotkey:** Customize the activation shortcut
-- **API Key:** Your OpenAI-compatible API key
-- **Model:** Select transcription model
+- **Transcription Mode:** Local (offline) or Cloud (API-based)
+- **Quality:** Fast, Balanced, or Best Quality (Local mode)
+- **API Key:** Your OpenAI-compatible API key (Cloud mode)
 - **Language:** Choose from 57 supported languages or auto-detect
+
+### Model Storage
+
+Downloaded Whisper models are stored in:
+```
+~/Library/Application Support/com.opendictation/Models/
+```
+
+The bundled `ggml-tiny.en` model is copied here on first launch. You can download additional models from Settings or delete unused ones to free disk space.
 
 ## Architecture
 

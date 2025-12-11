@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setupStatusItem()
         setupServices()
         setupStateMachine()
+        setupLocalTranscription()
     }
     
     func applicationWillTerminate(_ notification: Notification) {
@@ -93,7 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         #endif
         
         let settingsItem = NSMenuItem(
-            title: "Settings...",
+            title: "Settings…",
             action: #selector(openSettings),
             keyEquivalent: ","
         )
@@ -140,6 +141,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if !pm.isMicrophoneGranted {
                 print("[OpenDictation] Requesting Microphone permission...")
                 pm.requestMicrophone()
+            }
+        }
+    }
+    
+    /// Sets up local transcription on first launch.
+    /// Copies bundled model to Application Support and sets default mode.
+    private func setupLocalTranscription() {
+        Task {
+            // Copy bundled model if this is first launch
+            await ModelManager.shared.setupBundledModelIfNeeded()
+            
+            // Set local mode as default if no API key is configured
+            let hasApiKey = KeychainService.shared.load(KeychainService.Key.apiKey) != nil
+            let isFirstLaunch = !UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
+            
+            if isFirstLaunch {
+                UserDefaults.standard.set(true, forKey: "hasLaunchedBefore")
+                
+                // Default to local mode (works out of box)
+                if !hasApiKey {
+                    TranscriptionCoordinator.shared.currentMode = .local
+                    print("[OpenDictation] First launch: defaulting to local transcription mode")
+                }
+            }
+            
+            // Validate current mode
+            if let error = await TranscriptionCoordinator.shared.validateCurrentMode() {
+                print("[OpenDictation] Transcription mode warning: \(error)")
             }
         }
     }
@@ -254,7 +283,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 
                 do {
-                    let text = try await TranscriptionService.shared.transcribe(audioURL: audioURL)
+                    let text = try await TranscriptionCoordinator.shared.transcribe(audioURL: audioURL)
                     
                     // Check if task was cancelled
                     guard !Task.isCancelled else { return }

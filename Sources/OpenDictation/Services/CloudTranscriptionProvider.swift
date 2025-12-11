@@ -15,26 +15,26 @@ enum TranscriptionError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .apiKeyMissing:
-            return "API key is missing. Please add your API key in Settings."
+            return "No API key. Add one in Settings."
         case .invalidURL:
-            return "Invalid API URL configuration."
+            return "The server address isn't valid."
         case .audioFileNotFound:
             return "Audio file not found."
         case .audioFileEmpty:
             return "Audio file is empty."
         case .networkError(let error):
-            return "Network error: \(error.localizedDescription)"
+            return "Couldn't connect: \(error.localizedDescription)"
         case .apiRequestFailed(let statusCode, let message):
-            return "API request failed (\(statusCode)): \(message)"
+            return "Server error (\(statusCode)): \(message)"
         case .noTranscriptionReturned:
-            return "No transcription returned from API."
+            return "The server didn't return any text."
         case .invalidResponse:
-            return "Invalid response from transcription API."
+            return "Received an unexpected response from the server."
         }
     }
 }
 
-/// Service for transcribing audio using OpenAI-compatible APIs.
+/// Cloud transcription provider using OpenAI-compatible APIs.
 ///
 /// Supports:
 /// - OpenAI Whisper API (default)
@@ -43,15 +43,15 @@ enum TranscriptionError: Error, LocalizedError {
 ///
 /// Configuration is read from UserDefaults (baseURL, model, temperature, language)
 /// and Keychain (API key).
-final class TranscriptionService {
+final class CloudTranscriptionProvider: TranscriptionProvider {
     
     // MARK: - Singleton
     
-    static let shared = TranscriptionService()
+    static let shared = CloudTranscriptionProvider()
     
     // MARK: - Logger
     
-    private let logger = Logger(subsystem: "com.opendictation", category: "TranscriptionService")
+    private let logger = Logger(subsystem: "com.opendictation", category: "CloudTranscriptionProvider")
     
     private init() {}
     

@@ -11,11 +11,11 @@ enum RecordingError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .microphonePermissionDenied:
-            return "Microphone access is required for dictation. Please grant permission in System Settings."
+            return "Microphone access required. Allow in System Settings."
         case .setupFailed(let error):
-            return "Failed to set up recording: \(error.localizedDescription)"
+            return "Couldn't start recording: \(error.localizedDescription)"
         case .recordingFailed(let error):
-            return "Recording failed: \(error.localizedDescription)"
+            return "Recording stopped unexpectedly: \(error.localizedDescription)"
         }
     }
 }

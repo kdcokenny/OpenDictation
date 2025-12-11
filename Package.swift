@@ -20,13 +20,23 @@ let package = Package(
             dependencies: [
                 "KeyboardShortcuts",
                 "Settings",
-                "Defaults"
+                "Defaults",
+                "whisper"
             ],
             path: "Sources/OpenDictation",
             exclude: ["Info.plist"],
             resources: [
-                .copy("Resources/Sounds")
+                .copy("Resources/Sounds"),
+                .copy("Resources/Models")
+            ],
+            cSettings: [
+                .unsafeFlags(["-Wno-shorten-64-to-32"])
             ]
+        ),
+        // whisper.cpp XCFramework - built via `make whisper`
+        .binaryTarget(
+            name: "whisper",
+            path: "deps/whisper.cpp/build-apple/whisper.xcframework"
         )
     ]
 )
