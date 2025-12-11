@@ -1,5 +1,6 @@
 import AppKit
 import CoreAudio
+import os.log
 
 // AudioDeviceDuck is a semi-private CoreAudio API used by FaceTime/Siri for ducking
 // It's not in public headers but exists in the framework
@@ -17,6 +18,10 @@ func AudioDeviceDuck(
 /// Also handles volume ducking during recording using CoreAudio's AudioDeviceDuck API
 /// (same mechanism used by FaceTime/Siri) to lower other audio while our sounds play.
 final class AudioFeedbackService {
+    
+    // MARK: - Logger
+    
+    private let logger = Logger(subsystem: "com.opendictation", category: "AudioFeedback")
     
     // MARK: - Constants
     
@@ -54,23 +59,23 @@ final class AudioFeedbackService {
         // Load bundled macOS dictation sounds from SPM resource bundle
         if let url = Bundle.module.url(forResource: "begin_record", withExtension: "caf", subdirectory: "Sounds") {
             startSound = NSSound(contentsOf: url, byReference: false)
-            print("[AudioFeedback] Loaded start sound")
+            logger.debug("Loaded start sound")
         } else {
-            print("[AudioFeedback] WARNING: Could not load begin_record.caf")
+            logger.warning("Could not load begin_record.caf")
         }
         
         if let url = Bundle.module.url(forResource: "end_record", withExtension: "caf", subdirectory: "Sounds") {
             endSound = NSSound(contentsOf: url, byReference: false)
-            print("[AudioFeedback] Loaded end sound")
+            logger.debug("Loaded end sound")
         } else {
-            print("[AudioFeedback] WARNING: Could not load end_record.caf")
+            logger.warning("Could not load end_record.caf")
         }
         
         if let url = Bundle.module.url(forResource: "dictation_error", withExtension: "caf", subdirectory: "Sounds") {
             errorSound = NSSound(contentsOf: url, byReference: false)
-            print("[AudioFeedback] Loaded error sound")
+            logger.debug("Loaded error sound")
         } else {
-            print("[AudioFeedback] WARNING: Could not load dictation_error.caf")
+            logger.warning("Could not load dictation_error.caf")
         }
     }
     
@@ -107,9 +112,9 @@ final class AudioFeedbackService {
         )
         if status == noErr {
             isVolumeDucked = true
-            print("[AudioFeedback] Volume ducked (AudioDeviceDuck)")
+            logger.debug("Volume ducked")
         } else {
-            print("[AudioFeedback] WARNING: AudioDeviceDuck failed with status \(status)")
+            logger.warning("AudioDeviceDuck failed with status \(status)")
         }
     }
     
@@ -126,9 +131,9 @@ final class AudioFeedbackService {
         )
         if status == noErr {
             isVolumeDucked = false
-            print("[AudioFeedback] Volume restored (AudioDeviceDuck)")
+            logger.debug("Volume restored")
         } else {
-            print("[AudioFeedback] WARNING: AudioDeviceDuck restore failed with status \(status)")
+            logger.warning("AudioDeviceDuck restore failed with status \(status)")
         }
     }
     
@@ -155,7 +160,7 @@ final class AudioFeedbackService {
         )
         
         if status != noErr {
-            print("[AudioFeedback] WARNING: Failed to get default output device: \(status)")
+            logger.warning("Failed to get default output device: \(status)")
         }
         
         return deviceID

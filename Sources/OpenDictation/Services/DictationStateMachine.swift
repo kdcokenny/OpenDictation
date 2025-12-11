@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import os.log
 
 /// All possible states of the dictation flow.
 enum DictationState: Equatable {
@@ -35,6 +36,10 @@ enum DictationEvent {
 /// - `processing` → `cancelled` (escape)
 /// - `success`/`error`/`empty`/`cancelled` → `idle` (dismiss completed)
 final class DictationStateMachine: ObservableObject {
+    
+    // MARK: - Logger
+    
+    private let logger = Logger(subsystem: "com.opendictation", category: "StateMachine")
     
     // MARK: - Published State
     
@@ -129,12 +134,12 @@ final class DictationStateMachine: ObservableObject {
             
         // MARK: Invalid Transitions (Ignored)
         default:
-            print("[DictationStateMachine] Ignored event \(event) in state \(state)")
+            logger.debug("Ignored event \(String(describing: event)) in state \(String(describing: self.state))")
             return
         }
         
         if state != previousState {
-            print("[DictationStateMachine] \(previousState) → \(state)")
+            logger.debug("\(String(describing: previousState)) → \(String(describing: self.state))")
         }
     }
     

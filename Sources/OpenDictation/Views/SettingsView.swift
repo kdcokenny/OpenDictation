@@ -2,7 +2,8 @@ import SwiftUI
 import KeyboardShortcuts
 
 /// Main settings view for Open Dictation.
-/// Provides configuration for shortcut, transcription mode, quality, language, and API settings.
+/// Provides configuration for shortcut, transcription mode, language, and API settings.
+/// Model selection is automatic based on system capabilities, with manual override in Advanced.
 struct SettingsView: View {
     
     // MARK: - Static Helpers
@@ -22,9 +23,6 @@ struct SettingsView: View {
     /// Transcription mode (local/cloud)
     @AppStorage("transcriptionMode") private var transcriptionModeRaw: String = TranscriptionMode.local.rawValue
     
-    /// Transcription quality (local mode)
-    @AppStorage("transcriptionQuality") private var qualityRaw: String = TranscriptionQuality.fast.rawValue
-    
     /// Language setting - used by both local and cloud modes
     /// Defaults to system language if supported, otherwise auto-detect
     @AppStorage("language") private var language: String = SettingsView.systemLanguageCode
@@ -40,43 +38,15 @@ struct SettingsView: View {
     
     /// Controls section expansion
     @State private var isCloudAdvancedExpanded: Bool = false
+    @State private var isLocalAdvancedExpanded: Bool = false
     
     /// Model manager for download state
     @StateObject private var modelManager = ModelManager.shared
-    
-    /// Download state
-    @State private var isDownloading: Bool = false
-    @State private var downloadProgress: Double = 0
-    
-    /// Alert state for download prompt
-    @State private var showDownloadAlert: Bool = false
-    
-    /// Track previous values to revert on cancel
-    @State private var previousQualityRaw: String = ""
-    @State private var previousLanguage: String = ""
-    
-    /// Whether download was triggered by mode switch (vs quality/language change)
-    @State private var isModeSwitchTrigger: Bool = false
     
     // MARK: - Computed
     
     private var transcriptionMode: TranscriptionMode {
         TranscriptionMode(rawValue: transcriptionModeRaw) ?? .local
-    }
-    
-    private var quality: TranscriptionQuality {
-        TranscriptionQuality(rawValue: qualityRaw) ?? .fast
-    }
-    
-    /// The model needed for current quality + language
-    private var requiredModel: WhisperModel? {
-        PredefinedModels.model(for: quality, language: language)
-    }
-    
-    /// Whether the required model is downloaded
-    private var isModelReady: Bool {
-        guard let model = requiredModel else { return false }
-        return modelManager.isDownloaded(model)
     }
     
     // MARK: - Body
@@ -100,9 +70,8 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 
-                // Show inline download progress when downloading
-                if let model = requiredModel,
-                   let progress = modelManager.downloadProgress[model.name] {
+                // Show inline download progress when downloading recommended model
+                if let progress = modelManager.downloadProgress[modelManager.recommendedModelName] {
                     HStack(spacing: 8) {
                         ProgressView(value: progress)
                             .progressViewStyle(.linear)
@@ -125,13 +94,19 @@ struct SettingsView: View {
                         Text(name).tag(code)
                     }
                 }
+                .onChange(of: language) { _, newLanguage in
+                    // Trigger smart model selection when language changes
+                    Task {
+                        await modelManager.handleLanguageChange(to: newLanguage)
+                    }
+                }
                 
                 Text("Language to recognize")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
             
-            // MARK: Local Settings Section
+            // MARK: Local Settings Section (Advanced)
             if transcriptionMode == .local {
                 localSettingsSection
             }
@@ -142,52 +117,12 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420, height: 480)
+        .frame(width: 420, height: 400)
         .onAppear {
             loadApiKey()
-            updateSelectedModel()
         }
         .onChange(of: apiKey) { _, newValue in
             saveApiKey(newValue)
-        }
-        .onChange(of: qualityRaw) { oldValue, newValue in
-            updateSelectedModel()
-            // When switching quality tiers, check if new model needs download
-            if transcriptionMode == .local && !isModelReady {
-                previousQualityRaw = oldValue
-                isModeSwitchTrigger = false
-                showDownloadAlert = true
-            }
-        }
-        .onChange(of: language) { oldValue, newValue in
-            updateSelectedModel()
-            // When changing language, check if new model needs download
-            if transcriptionMode == .local && !isModelReady {
-                previousLanguage = oldValue
-                isModeSwitchTrigger = false
-                showDownloadAlert = true
-            }
-        }
-        .onChange(of: transcriptionModeRaw) { oldValue, newValue in
-            // When switching to Local, check if model is ready
-            if newValue == TranscriptionMode.local.rawValue && !isModelReady {
-                isModeSwitchTrigger = true
-                showDownloadAlert = true
-            }
-        }
-        .alert("Download Model", isPresented: $showDownloadAlert) {
-            Button("Download") {
-                startDownload()
-            }
-            Button(isModeSwitchTrigger ? "Use Online" : "Cancel", role: .cancel) {
-                revertChanges()
-            }
-        } message: {
-            if let model = requiredModel {
-                Text("This model requires \(model.size) of storage.")
-            } else {
-                Text("A speech model is required for offline transcription.")
-            }
         }
     }
     
@@ -195,71 +130,11 @@ struct SettingsView: View {
     
     @ViewBuilder
     private var localSettingsSection: some View {
-        // Quality Section
         Section {
-            ForEach(TranscriptionQuality.allCases, id: \.self) { tier in
-                qualityRow(tier)
+            DisclosureGroup("Advanced", isExpanded: $isLocalAdvancedExpanded) {
+                AdvancedModelSettingsView(modelManager: modelManager)
+                    .padding(.top, 8)
             }
-        } header: {
-            Text("Quality")
-                .font(.headline)
-        }
-    }
-    
-    // MARK: - Quality Row
-    
-    @ViewBuilder
-    private func qualityRow(_ tier: TranscriptionQuality) -> some View {
-        let isSelected = quality == tier
-        let modelName = tier.modelName(forLanguage: language)
-        let isDownloaded = modelManager.downloadedModels.contains { $0.name == modelName }
-        let isDownloading = modelManager.downloadProgress[modelName] != nil
-        
-        HStack {
-            // Selection indicator
-            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .foregroundColor(isSelected ? .accentColor : .secondary)
-                .imageScale(.large)
-            
-            // Quality info
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(tier.displayName)
-                        .fontWeight(isSelected ? .semibold : .regular)
-                    
-                    if tier.isBundled {
-                        Text("Included")
-                            .font(.caption2)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Color.accentColor.opacity(0.2))
-                            .cornerRadius(3)
-                    }
-                }
-                
-                Text(tier.description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            
-            Spacer()
-            
-            // Status indicator (consistent sizing)
-            if isDownloading {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 16, height: 16)
-            } else if !isDownloaded && !tier.isBundled {
-                Image(systemName: "arrow.down.circle")
-                    .font(.system(size: 14))
-                    .foregroundColor(.secondary)
-                    .frame(width: 16, height: 16)
-            }
-        }
-        .padding(.vertical, 4)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            qualityRaw = tier.rawValue
         }
     }
     
@@ -336,13 +211,6 @@ struct SettingsView: View {
     
     // MARK: - Helpers
     
-    private func updateSelectedModel() {
-        // Update the selected model in ModelManager based on quality + language
-        if let model = requiredModel {
-            modelManager.selectedModelName = model.name
-        }
-    }
-    
     private func loadApiKey() {
         apiKey = KeychainService.shared.load(KeychainService.Key.apiKey) ?? ""
     }
@@ -354,29 +222,159 @@ struct SettingsView: View {
             KeychainService.shared.save(value, for: KeychainService.Key.apiKey)
         }
     }
+}
+
+// MARK: - Advanced Model Settings View
+
+/// Advanced settings for manual model selection.
+/// Shows current model, recommended model, and allows manual override.
+struct AdvancedModelSettingsView: View {
+    @ObservedObject var modelManager: ModelManager
     
-    private func startDownload() {
-        guard let model = requiredModel else { return }
-        Task {
-            await modelManager.downloadModel(model)
-        }
-        // Clear revert state since user chose to download
-        previousQualityRaw = ""
-        previousLanguage = ""
+    /// Current language setting (to check model compatibility)
+    @AppStorage("language") private var language: String = ""
+    
+    /// Alert for download confirmation
+    @State private var showDownloadAlert = false
+    @State private var modelToDownload: WhisperModel?
+    
+    /// Whether current model supports selected language
+    private var isModelCompatible: Bool {
+        modelManager.currentModelSupportsLanguage(language)
     }
     
-    private func revertChanges() {
-        if isModeSwitchTrigger {
-            // Revert mode switch
-            transcriptionModeRaw = TranscriptionMode.cloud.rawValue
-        } else if !previousQualityRaw.isEmpty {
-            // Revert quality change
-            qualityRaw = previousQualityRaw
-            previousQualityRaw = ""
-        } else if !previousLanguage.isEmpty {
-            // Revert language change
-            language = previousLanguage
-            previousLanguage = ""
+    /// Display name for current language
+    private var languageDisplayName: String {
+        WhisperLanguages.all[language] ?? language
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Language compatibility warning (only show in manual override mode)
+            if modelManager.isManualModelOverride && !isModelCompatible {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                        .imageScale(.small)
+                    Text("This model doesn't support \(languageDisplayName)")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+                .padding(.vertical, 4)
+            }
+            
+            // Current model info
+            HStack {
+                Text("Current")
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(modelManager.selectedModelName)
+                    .font(.system(.body, design: .monospaced))
+                    .fontWeight(.medium)
+            }
+            
+            // Recommended model info
+            HStack {
+                Text("Recommended")
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(modelManager.recommendedModelName)
+                    .font(.system(.body, design: .monospaced))
+                if modelManager.isUsingRecommendedModel {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                        .imageScale(.small)
+                }
+            }
+            
+            Divider()
+            
+            // Model picker - shows actual model names for power users
+            Picker("Model", selection: Binding(
+                get: { modelManager.selectedModelName },
+                set: { newModel in
+                    selectModel(newModel)
+                }
+            )) {
+                ForEach(PredefinedModels.all, id: \.name) { model in
+                    HStack {
+                        Text(model.name)
+                            .font(.system(.body, design: .monospaced))
+                        Text("(\(model.size))")
+                            .foregroundColor(.secondary)
+                        if modelManager.isModelDownloaded(model.name) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                                .imageScale(.small)
+                        }
+                    }
+                    .tag(model.name)
+                }
+            }
+            .pickerStyle(.menu)
+            
+            // Download progress or status
+            if let progress = currentDownloadProgress {
+                HStack(spacing: 8) {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                    Text("\(Int(progress * 100))%")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
+            // Reset to automatic button (only show if manual override is active)
+            if modelManager.isManualModelOverride {
+                Button("Reset to Automatic") {
+                    Task {
+                        await modelManager.resetToAutomatic()
+                    }
+                }
+                .buttonStyle(.link)
+            }
+        }
+        .alert("Download Model", isPresented: $showDownloadAlert) {
+            Button("Download") {
+                if let model = modelToDownload {
+                    Task {
+                        await modelManager.downloadModel(model)
+                        // After download, select it
+                        if modelManager.isModelDownloaded(model.name) {
+                            modelManager.selectedModelName = model.name
+                            modelManager.isManualModelOverride = true
+                        }
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                modelToDownload = nil
+            }
+        } message: {
+            if let model = modelToDownload {
+                Text("Download \(model.displayName)? This requires \(model.size) of storage.")
+            }
+        }
+    }
+    
+    /// Current download progress for selected model, if any
+    private var currentDownloadProgress: Double? {
+        modelManager.downloadProgress[modelManager.selectedModelName]
+    }
+    
+    /// Handles model selection, prompting for download if needed
+    private func selectModel(_ modelName: String) {
+        // If already downloaded, just select it
+        if modelManager.isModelDownloaded(modelName) {
+            modelManager.selectedModelName = modelName
+            modelManager.isManualModelOverride = true
+            return
+        }
+        
+        // Need to download - show confirmation
+        if let model = PredefinedModels.find(byName: modelName) {
+            modelToDownload = model
+            showDownloadAlert = true
         }
     }
 }

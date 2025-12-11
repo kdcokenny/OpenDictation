@@ -34,16 +34,6 @@ final class TranscriptionCoordinator {
         }
     }
     
-    /// Returns the appropriate provider for the current mode.
-    var currentProvider: TranscriptionProvider {
-        switch currentMode {
-        case .local:
-            return localProvider
-        case .cloud:
-            return cloudProvider
-        }
-    }
-    
     // MARK: - Transcription
     
     /// Transcribes audio using the current mode's provider.
@@ -87,20 +77,5 @@ final class TranscriptionCoordinator {
             }
             return nil
         }
-    }
-    
-    /// Checks if local mode is available (has at least one model).
-    func isLocalModeAvailable() async -> Bool {
-        let modelManager = await ModelManager.shared
-        return await !modelManager.downloadedModels.isEmpty
-    }
-    
-    /// Checks if cloud mode is available (has API key).
-    func isCloudModeAvailable() -> Bool {
-        guard let apiKey = KeychainService.shared.load(KeychainService.Key.apiKey),
-              !apiKey.isEmpty else {
-            return false
-        }
-        return true
     }
 }

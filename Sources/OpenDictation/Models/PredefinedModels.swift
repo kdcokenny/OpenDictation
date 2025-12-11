@@ -1,50 +1,5 @@
 import Foundation
 
-/// Quality tiers for local transcription.
-/// Apple-style: simple choices without technical details.
-enum TranscriptionQuality: String, CaseIterable, Codable {
-    case fast = "fast"
-    case balanced = "balanced"
-    case bestQuality = "bestQuality"
-    
-    var displayName: String {
-        switch self {
-        case .fast: return "Fast"
-        case .balanced: return "Balanced"
-        case .bestQuality: return "Best Quality"
-        }
-    }
-    
-    var description: String {
-        switch self {
-        case .fast: return "Fastest. Good for quick notes."
-        case .balanced: return "Better accuracy. Good for most tasks."
-        case .bestQuality: return "Best accuracy. Great for important documents."
-        }
-    }
-    
-    /// Returns the appropriate model name based on quality and language.
-    /// Uses .en models for English, multilingual models for other languages.
-    func modelName(forLanguage language: String) -> String {
-        let isEnglish = language == "en" || language.isEmpty
-        
-        switch self {
-        case .fast:
-            return isEnglish ? "ggml-tiny.en" : "ggml-tiny"
-        case .balanced:
-            return isEnglish ? "ggml-base.en" : "ggml-base"
-        case .bestQuality:
-            // Large model is always multilingual (no .en variant)
-            return "ggml-large-v3-turbo-q5_0"
-        }
-    }
-    
-    /// Whether this quality tier is bundled with the app.
-    var isBundled: Bool {
-        self == .fast
-    }
-}
-
 /// Curated list of Whisper models.
 /// Models are downloaded from Hugging Face.
 /// Users don't see these directly - they select Quality + Language instead.
@@ -52,27 +7,27 @@ enum PredefinedModels {
     
     /// All available models (internal use)
     static let all: [WhisperModel] = [
-        // Fast tier - English
-        WhisperModel(
-            id: UUID(),
-            name: "ggml-tiny.en",
-            displayName: "Fast",
-            size: "75 MB",
-            downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
-            isMultilingual: false,
-            description: "Fastest. Good for quick notes.",
-            isBundled: true
-        ),
-        
-        // Fast tier - Multilingual
+        // Fast tier - Multilingual (bundled - works for all languages)
         WhisperModel(
             id: UUID(),
             name: "ggml-tiny",
-            displayName: "Fast",
+            displayName: "Tiny (Multilingual)",
             size: "75 MB",
             downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
             isMultilingual: true,
-            description: "Fastest. Good for quick notes."
+            description: "Fastest. Works with all languages.",
+            isBundled: true
+        ),
+        
+        // Fast tier - English only
+        WhisperModel(
+            id: UUID(),
+            name: "ggml-tiny.en",
+            displayName: "Tiny (English)",
+            size: "75 MB",
+            downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
+            isMultilingual: false,
+            description: "Fastest. Optimized for English."
         ),
         
         // Balanced tier - English
@@ -122,9 +77,89 @@ enum PredefinedModels {
         all.first { $0.name == name }
     }
     
-    /// Get the model for a quality tier and language
-    static func model(for quality: TranscriptionQuality, language: String) -> WhisperModel? {
-        let modelName = quality.modelName(forLanguage: language)
-        return find(byName: modelName)
+    // MARK: - Language-Aware Recommendations
+    
+    /// Model tiers for capability-based selection
+    enum ModelTier: String {
+        case tiny = "tiny"
+        case base = "base"
+        case large = "large"
+    }
+    
+    /// Returns the recommended model for a language and hardware tier.
+    /// Uses English-optimized models when appropriate, multilingual otherwise.
+    ///
+    /// - Parameters:
+    ///   - language: ISO 639-1 language code (e.g., "en", "es") or "auto"
+    ///   - tier: Hardware capability tier (tiny/base/large)
+    /// - Returns: The best model for this combination
+    static func recommendedModel(forLanguage language: String, tier: ModelTier) -> WhisperModel {
+        let useEnglishOptimized = (language == "en")
+        
+        switch tier {
+        case .tiny:
+            // Tiny tier: use .en for English, multilingual otherwise
+            if useEnglishOptimized {
+                return find(byName: "ggml-tiny.en") ?? bundled
+            } else {
+                return find(byName: "ggml-tiny") ?? bundled
+            }
+            
+        case .base:
+            // Base tier: use .en for English, multilingual otherwise
+            if useEnglishOptimized {
+                return find(byName: "ggml-base.en") ?? bundled
+            } else {
+                return find(byName: "ggml-base") ?? bundled
+            }
+            
+        case .large:
+            // Large tier: always multilingual (no .en variant for large-v3-turbo)
+            return find(byName: "ggml-large-v3-turbo-q5_0") ?? bundled
+        }
+    }
+    
+    /// Returns the multilingual equivalent of a model.
+    /// Used when switching from English to another language.
+    ///
+    /// - Parameter model: The current model
+    /// - Returns: Multilingual version, or same model if already multilingual
+    static func multilingualEquivalent(of model: WhisperModel) -> WhisperModel {
+        if model.isMultilingual {
+            return model
+        }
+        
+        // Map English-only models to their multilingual equivalents
+        switch model.name {
+        case "ggml-tiny.en":
+            return find(byName: "ggml-tiny") ?? bundled
+        case "ggml-base.en":
+            return find(byName: "ggml-base") ?? bundled
+        default:
+            // Unknown model, fall back to bundled multilingual
+            return bundled
+        }
+    }
+    
+    /// Returns the English-optimized equivalent of a model.
+    /// Used when switching to English language.
+    ///
+    /// - Parameter model: The current model
+    /// - Returns: English-optimized version, or same model if none exists
+    static func englishOptimizedEquivalent(of model: WhisperModel) -> WhisperModel? {
+        if !model.isMultilingual {
+            return model  // Already English-optimized
+        }
+        
+        // Map multilingual models to their English equivalents
+        switch model.name {
+        case "ggml-tiny":
+            return find(byName: "ggml-tiny.en")
+        case "ggml-base":
+            return find(byName: "ggml-base.en")
+        default:
+            // No English-optimized version (e.g., large-v3-turbo)
+            return nil
+        }
     }
 }

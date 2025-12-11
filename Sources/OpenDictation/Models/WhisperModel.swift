@@ -35,9 +35,23 @@ struct WhisperModel: Identifiable, Equatable, Codable {
         "\(name).bin"
     }
     
-    /// Languages supported by this model
+    /// Languages this model supports.
+    /// Multilingual models support all Whisper languages.
+    /// English-only models (.en suffix) only support English.
     var supportedLanguages: [String: String] {
         isMultilingual ? WhisperLanguages.all : WhisperLanguages.englishOnly
+    }
+    
+    /// Checks if this model supports a given language code.
+    /// - Parameter languageCode: ISO 639-1 code (e.g., "en", "es") or "auto"
+    /// - Returns: true if model can transcribe this language well
+    func supportsLanguage(_ languageCode: String) -> Bool {
+        // "auto" is supported by all models (they'll detect the language)
+        // But for English-only models, auto will still only work for English
+        if languageCode == "auto" {
+            return true  // Let user try auto on any model
+        }
+        return supportedLanguages.keys.contains(languageCode)
     }
     
     // MARK: - Equatable

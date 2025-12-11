@@ -1,4 +1,5 @@
 import KeyboardShortcuts
+import os.log
 
 // MARK: - Shortcut Name Registration
 
@@ -12,6 +13,8 @@ extension KeyboardShortcuts.Name {
 /// Manages global keyboard shortcuts using KeyboardShortcuts library.
 final class HotkeyService {
     
+    private let logger = Logger(subsystem: "com.opendictation", category: "HotkeyService")
+    
     /// Called when the hotkey is pressed.
     var onHotkeyPressed: (() -> Void)?
     
@@ -20,6 +23,6 @@ final class HotkeyService {
         KeyboardShortcuts.onKeyDown(for: .toggleDictation) { [weak self] in
             self?.onHotkeyPressed?()
         }
-        print("[HotkeyService] Listening for Option+Space")
+        logger.debug("Listening for hotkey")
     }
 }

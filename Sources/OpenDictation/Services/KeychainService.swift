@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import os.log
 
 /// A simple service for securely storing and retrieving sensitive data in the macOS Keychain.
 /// Used primarily for API key storage.
@@ -8,6 +9,7 @@ final class KeychainService {
   static let shared = KeychainService()
   
   private let service = "com.opendictation"
+  private let logger = Logger(subsystem: "com.opendictation", category: "Keychain")
   
   private init() {}
   
@@ -36,7 +38,7 @@ final class KeychainService {
     let status = SecItemAdd(query as CFDictionary, nil)
     
     if status != errSecSuccess {
-      print("[KeychainService] Failed to save key '\(key)': \(status)")
+      logger.error("Failed to save key '\(key)': \(status)")
     }
     
     return status == errSecSuccess

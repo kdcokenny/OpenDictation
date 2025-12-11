@@ -21,22 +21,18 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
     /// The name of the currently loaded model
     private var loadedModelName: String?
     
-    /// Whether a model is currently loaded
-    var isModelLoaded: Bool {
-        whisperContext != nil
-    }
-    
     private init() {}
     
     // MARK: - TranscriptionProvider
     
     /// Transcribes the audio file at the given URL using the local Whisper model.
     func transcribe(audioURL: URL) async throws -> String {
-        // Get selected model from ModelManager
+        // Get selected model from ModelManager, with fallback to any available model
         let modelManager = await ModelManager.shared
         
-        guard let selectedModel = await modelManager.selectedModel else {
-            logger.error("No local model selected")
+        let selectedModel = await resolveAvailableModel(modelManager: modelManager)
+        guard let selectedModel else {
+            logger.error("No speech models available")
             throw WhisperError.modelNotFound
         }
         
@@ -51,10 +47,14 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
         }
         
         // Configure transcription parameters from UserDefaults
-        let language = UserDefaults.standard.string(forKey: "localLanguage") ?? "auto"
-        let temperature = Float(UserDefaults.standard.double(forKey: "localTemperature"))
-        let initialPrompt = UserDefaults.standard.string(forKey: "localInitialPrompt")
-        let translateToEnglish = UserDefaults.standard.bool(forKey: "localTranslateToEnglish")
+        // Use shared "language" key (same as cloud mode) for consistency
+        let language = UserDefaults.standard.string(forKey: "language") ?? "auto"
+        // Local mode uses deterministic transcription (temperature = 0)
+        let temperature: Float = 0.0
+        // No initial prompt for local mode (keep transcription clean)
+        let initialPrompt: String? = nil
+        // No translation - user selects language directly
+        let translateToEnglish = false
         
         await context.configure(
             language: language,
@@ -131,8 +131,45 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
         logger.debug("Whisper context released")
     }
     
-    /// Forces a reload of the model on next transcription.
-    func invalidateModel() {
-        loadedModelName = nil
+    // MARK: - Model Resolution
+    
+    /// Resolves the model to use for transcription, with graceful fallback.
+    /// Apple philosophy: always try to find a working model rather than failing.
+    ///
+    /// Priority:
+    /// 1. Selected model (if downloaded)
+    /// 2. Bundled model (ggml-tiny)
+    /// 3. Any downloaded model
+    /// 4. nil (no models available)
+    private func resolveAvailableModel(modelManager: ModelManager) async -> DownloadedModel? {
+        // First try: selected model
+        if let selected = await modelManager.selectedModel {
+            return selected
+        }
+        
+        let downloadedModels = await modelManager.downloadedModels
+        
+        // Second try: bundled model
+        let bundledName = PredefinedModels.bundled.name
+        if let bundled = downloadedModels.first(where: { $0.name == bundledName }) {
+            logger.info("Selected model not available, falling back to bundled: \(bundledName)")
+            await MainActor.run {
+                modelManager.selectedModelName = bundledName
+            }
+            return bundled
+        }
+        
+        // Third try: any available model
+        if let anyModel = downloadedModels.first {
+            logger.info("Bundled model not available, falling back to: \(anyModel.name)")
+            await MainActor.run {
+                modelManager.selectedModelName = anyModel.name
+            }
+            return anyModel
+        }
+        
+        // No models available
+        logger.warning("No speech models available for transcription")
+        return nil
     }
 }

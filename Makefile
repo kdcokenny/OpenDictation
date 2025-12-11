@@ -8,10 +8,10 @@ FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
 MODELS_DIR := Sources/OpenDictation/Resources/Models
 
 # Model URLs (from Hugging Face)
-TINY_EN_URL := https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
+TINY_URL := https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
 SILERO_VAD_URL := https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
 
-.PHONY: all clean whisper models setup build check help dev
+.PHONY: all clean whisper models setup build check help dev reset
 
 # Default target
 all: check setup build
@@ -47,12 +47,12 @@ whisper:
 models:
 	@echo "Downloading models..."
 	@mkdir -p $(MODELS_DIR)
-	@if [ ! -f "$(MODELS_DIR)/ggml-tiny.en.bin" ]; then \
-		echo "Downloading ggml-tiny.en.bin (~75MB)..."; \
-		curl -L --progress-bar -o "$(MODELS_DIR)/ggml-tiny.en.bin" "$(TINY_EN_URL)"; \
-		echo "Downloaded ggml-tiny.en.bin"; \
+	@if [ ! -f "$(MODELS_DIR)/ggml-tiny.bin" ]; then \
+		echo "Downloading ggml-tiny.bin (~75MB multilingual)..."; \
+		curl -L --progress-bar -o "$(MODELS_DIR)/ggml-tiny.bin" "$(TINY_URL)"; \
+		echo "Downloaded ggml-tiny.bin"; \
 	else \
-		echo "ggml-tiny.en.bin already exists"; \
+		echo "ggml-tiny.bin already exists"; \
 	fi
 	@if [ ! -f "$(MODELS_DIR)/ggml-silero-v5.1.2.bin" ]; then \
 		echo "Downloading ggml-silero-v5.1.2.bin (~2MB VAD model)..."; \
@@ -94,6 +94,14 @@ clean-all: clean
 	@echo "Note: Models in $(MODELS_DIR) preserved. Remove manually if needed."
 	@echo "Deep clean complete"
 
+# Reset app state for testing (clears preferences and downloaded models)
+reset:
+	@echo "Resetting OpenDictation to fresh state..."
+	@pkill -x OpenDictation 2>/dev/null || true
+	@defaults delete com.opendictation 2>/dev/null || true
+	@rm -rf ~/Library/Application\ Support/com.opendictation/Models/
+	@echo "Reset complete. Run 'make run' to test fresh install flow."
+
 # Help
 help:
 	@echo "OpenDictation Build System"
@@ -109,9 +117,14 @@ help:
 	@echo "  all        Run check + setup + build (default)"
 	@echo "  clean      Clean Swift build artifacts"
 	@echo "  clean-all  Clean + remove deps directory"
+	@echo "  reset      Reset app state (clear prefs + downloaded models)"
 	@echo "  help       Show this help message"
 	@echo ""
 	@echo "Quick start:"
 	@echo "  make setup    # First time: build framework + download models"
 	@echo "  make build    # Build the app"
 	@echo "  make run      # Run the app"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make reset    # Clear all app state for fresh install testing"
+	@echo "  make run      # Run and observe auto-selection behavior"

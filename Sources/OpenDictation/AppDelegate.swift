@@ -1,8 +1,13 @@
 import AppKit
 import SwiftUI
 import Combine
+import os.log
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    
+    // MARK: - Logger
+    
+    private let logger = Logger(subsystem: "com.opendictation", category: "AppDelegate")
     
     // MARK: - Constants
     
@@ -127,26 +132,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         // Log permission status on launch
         if let pm = permissionsManager {
-            print("[OpenDictation] Accessibility granted: \(pm.isAccessibilityGranted)")
-            print("[OpenDictation] Microphone granted: \(pm.isMicrophoneGranted)")
-            print("[OpenDictation] All permissions granted: \(pm.allPermissionsGranted)")
+            logger.debug("Accessibility granted: \(pm.isAccessibilityGranted)")
+            logger.debug("Microphone granted: \(pm.isMicrophoneGranted)")
+            logger.debug("All permissions granted: \(pm.allPermissionsGranted)")
             
             // Request accessibility permission if not granted (triggers system prompt)
             if !pm.isAccessibilityGranted {
-                print("[OpenDictation] Requesting Accessibility permission...")
+                logger.info("Requesting Accessibility permission...")
                 pm.requestAccessibility()
             }
             
             // Request microphone permission if not granted (async, non-blocking)
             if !pm.isMicrophoneGranted {
-                print("[OpenDictation] Requesting Microphone permission...")
+                logger.info("Requesting Microphone permission...")
                 pm.requestMicrophone()
             }
         }
     }
     
     /// Sets up local transcription on first launch.
-    /// Copies bundled model to Application Support and sets default mode.
+    /// Copies bundled model to Application Support and checks for auto-upgrade.
     private func setupLocalTranscription() {
         Task {
             // Copy bundled model if this is first launch
@@ -162,14 +167,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 // Default to local mode (works out of box)
                 if !hasApiKey {
                     TranscriptionCoordinator.shared.currentMode = .local
-                    print("[OpenDictation] First launch: defaulting to local transcription mode")
+                    self.logger.info("First launch: defaulting to local transcription mode")
                 }
             }
             
             // Validate current mode
             if let error = await TranscriptionCoordinator.shared.validateCurrentMode() {
-                print("[OpenDictation] Transcription mode warning: \(error)")
+                self.logger.warning("Transcription mode issue: \(error)")
             }
+            
+            // Check if auto-upgrade is needed (downloads better model if on Wi-Fi)
+            await ModelManager.shared.checkAndUpgradeIfNeeded()
         }
     }
     
@@ -245,9 +253,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sm.onStartRecording = { [weak self] in
             do {
                 try self?.recordingService?.startRecording()
-                print("[OpenDictation] Recording started")
+                self?.logger.debug("Recording started")
             } catch {
-                print("[OpenDictation] Failed to start recording: \(error.localizedDescription)")
+                self?.logger.error("Failed to start recording: \(error.localizedDescription)")
                 // Trigger error state
                 DispatchQueue.main.async {
                     self?.stateMachine?.send(.transcriptionFailed(error: error.localizedDescription))
@@ -260,12 +268,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             
             // Stop recording and get audio URL
             guard let audioURL = self.recordingService?.stopRecording() else {
-                print("[OpenDictation] No recording available")
+                self.logger.warning("No recording available")
                 sm?.send(.transcriptionFailed(error: "No recording available"))
                 return
             }
             
-            print("[OpenDictation] Recording stopped, starting transcription...")
+            self.logger.debug("Recording stopped, starting transcription...")
             
             // Notify that transcription has started (shows processing state)
             // Brief delay to allow UI to update
@@ -295,7 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     // Check if task was cancelled
                     guard !Task.isCancelled else { return }
                     
-                    print("[OpenDictation] Transcription failed: \(error.localizedDescription)")
+                    self?.logger.error("Transcription failed: \(error.localizedDescription)")
                     await MainActor.run {
                         stateMachine?.send(.transcriptionFailed(error: error.localizedDescription))
                     }

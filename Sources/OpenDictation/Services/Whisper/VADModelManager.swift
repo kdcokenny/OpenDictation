@@ -51,9 +51,4 @@ final class VADModelManager {
         logger.warning("VAD model not found in bundle - VAD will be disabled")
         return nil
     }
-    
-    /// Checks if the VAD model is available.
-    func isVADAvailable() async -> Bool {
-        await getModelPath() != nil
-    }
 }

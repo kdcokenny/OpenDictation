@@ -6,8 +6,8 @@
   - Clone whisper.cpp, run `./build-xcframework.sh`
 - [x] 1.2 Add whisper.xcframework to Xcode project (Package.swift)
 - [x] 1.3 Bundle models in `Resources/Models/`:
-  - `ggml-tiny.en.bin` (~75MB) - [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin)
-  - `ggml-silero-v5.1.2.bin` (~2MB) - VAD model from VoiceInk
+  - `ggml-tiny.en.bin` (~75MB)
+  - `ggml-silero-v5.1.2.bin` (~2MB) - VAD model
 - [x] 1.4 Update `.gitignore` for `deps/` directory
 
 ## 2. Whisper Integration Layer

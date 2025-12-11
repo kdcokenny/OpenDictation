@@ -21,7 +21,7 @@ Open Dictation brings voice-to-text to any application with a simple hotkey. It'
 
 ### Prerequisites
 
-- macOS 13.0 (Ventura) or later
+- macOS 14.0 (Sonoma) or later
 - Xcode 15.0+
 
 ### Permissions
@@ -43,7 +43,7 @@ Open Dictation requires:
    make setup
    ```
    This clones whisper.cpp, builds the XCFramework, and downloads:
-   - `ggml-tiny.en.bin` (~75MB) - Default transcription model
+   - `ggml-tiny.bin` (~75MB) - Default transcription model (multilingual)
    - `ggml-silero-v5.1.2.bin` (~2MB) - Voice Activity Detection model
 
 3. Build the app
@@ -75,9 +75,8 @@ Open the Settings window from the menu bar to configure:
 
 - **Hotkey:** Customize the activation shortcut
 - **Transcription Mode:** Local (offline) or Cloud (API-based)
-- **Quality:** Fast, Balanced, or Best Quality (Local mode)
 - **API Key:** Your OpenAI-compatible API key (Cloud mode)
-- **Language:** Choose from 57 supported languages or auto-detect
+- **Language:** Choose from 50+ supported languages or auto-detect
 
 ### Model Storage
 
@@ -86,7 +85,7 @@ Downloaded Whisper models are stored in:
 ~/Library/Application Support/com.opendictation/Models/
 ```
 
-The bundled `ggml-tiny.en` model is copied here on first launch. You can download additional models from Settings or delete unused ones to free disk space.
+The bundled `ggml-tiny` model is copied here on first launch. The app automatically selects the best model for your system. You can manually select models in Advanced Settings or delete unused ones to free disk space.
 
 ## Architecture
 
