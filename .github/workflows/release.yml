@@ -32,11 +32,12 @@ jobs:
       
       - name: Download whisper.cpp XCFramework
         run: |
-          mkdir -p deps/whisper.cpp/build-apple
+          mkdir -p deps/whisper.cpp
           curl -L -o whisper-xcframework.zip \
             "https://github.com/ggml-org/whisper.cpp/releases/download/v$WHISPER_VERSION/whisper-v$WHISPER_VERSION-xcframework.zip"
-          unzip -q whisper-xcframework.zip -d deps/whisper.cpp/build-apple
+          unzip -q whisper-xcframework.zip -d deps/whisper.cpp
           rm whisper-xcframework.zip
+          ls -la deps/whisper.cpp/build-apple/
           echo "Downloaded whisper.cpp v$WHISPER_VERSION xcframework"
       
       - name: Download models
