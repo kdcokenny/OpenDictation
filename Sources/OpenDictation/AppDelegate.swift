@@ -43,6 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setupServices()
         setupStateMachine()
         setupLocalTranscription()
+        
+        // Initialize updater (starts automatic update checks)
+        _ = UpdateService.shared
     }
     
     func applicationWillTerminate(_ notification: Notification) {
@@ -97,6 +100,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         menu.addItem(NSMenuItem.separator())
         #endif
+        
+        let checkForUpdatesItem = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(checkForUpdates),
+            keyEquivalent: ""
+        )
+        checkForUpdatesItem.target = self
+        menu.addItem(checkForUpdatesItem)
+        
+        menu.addItem(NSMenuItem.separator())
         
         let settingsItem = NSMenuItem(
             title: "Settings…",
@@ -524,6 +537,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DispatchQueue.main.async {
             NSApp.setActivationPolicy(.accessory)
         }
+    }
+    
+    @objc private func checkForUpdates() {
+        UpdateService.shared.checkForUpdates()
     }
     
     @objc private func quitApp() {
