@@ -12,11 +12,7 @@
       <sparkle:version>4</sparkle:version>
       <sparkle:shortVersionString>0.1.1-alpha</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <enclosure 
-        url="https://github.com/kdcokenny/OpenDictation/releases/download/v0.1.1-alpha/OpenDictation-0.1.1-alpha.dmg" 
-        sparkle:edSignature="5GtkePqOjelYweMaUDISgkU9Bch0suX+KPR5GhVNKRB1oInlA7FWdH6qMe3JsAz4M3/5mC4zGyFwquzAlWZYBQ==" 
-        length="74471873" 
-        type="application/octet-stream" />
+      <enclosure url="https://github.com/kdcokenny/OpenDictation/releases/download/v0.1.1-alpha/OpenDictation-0.1.1-alpha.dmg" sparkle:edSignature="5GtkePqOjelYweMaUDISgkU9Bch0suX+KPR5GhVNKRB1oInlA7FWdH6qMe3JsAz4M3/5mC4zGyFwquzAlWZYBQ==" length="74471873" type="application/octet-stream" />
     </item>
-  </channel>
+  <item><title>Version 0.1.2-alpha</title><pubDate>Thu, 11 Dec 2025 21:21:22 +0000</pubDate><sparkle:version>5</sparkle:version><sparkle:shortVersionString>0.1.2-alpha</sparkle:shortVersionString><sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion><enclosure url="https://github.com/kdcokenny/OpenDictation/releases/download/v0.1.2-alpha/OpenDictation-0.1.2-alpha.dmg" sparkle:edSignature="MFPduJFdD3GuzuiE25LxLxvc+VzugK5xgt+VYXQS2fyWZ/yFcZIr80+HlYtPV+bX0fmOn8nxwvrL3dV7ifMPBg==" length="76288546" type="application/octet-stream" /></item></channel>
 </rss>
