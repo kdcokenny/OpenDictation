@@ -1,7 +1,7 @@
 # Project Context
 
 ## Purpose
-Open Dictate is a native macOS application that decouples Apple's built-in dictation UI from its closed ecosystem. It provides a pixel-perfect recreation of the native HUD while allowing developers to route audio to any inference backend—local Whisper models for offline use, or OpenAI-compatible APIs (Groq, OpenAI, etc.) for cloud-based transcription.
+Open Dictation is a native macOS application that decouples Apple's built-in dictation UI from its closed ecosystem. It provides a pixel-perfect recreation of the native HUD while allowing developers to route audio to any inference backend—local Whisper models for offline use, or OpenAI-compatible APIs (Groq, OpenAI, etc.) for cloud-based transcription.
 
 **Goals:**
 - Deliver a 1:1 native dictation HUD experience
