@@ -6,5 +6,17 @@
     <description>Updates for Open Dictation</description>
     <language>en</language>
     
-  <item><title>Version 0.1.0-alpha</title><pubDate>Thu, 11 Dec 2025 20:35:02 +0000</pubDate><sparkle:version>3</sparkle:version><sparkle:shortVersionString>0.1.0-alpha</sparkle:shortVersionString><sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion><enclosure url="https://github.com/kdcokenny/OpenDictation/releases/download/v0.1.0-alpha/OpenDictation-0.1.0-alpha.dmg" sparkle:edSignature="bwpOU6TShjvZxe62dmTiAuM0gyFpHrbYlLnb6H6uDta0tkW+XRJbvSA9heNXOG7HKFG+/0w7pyruSNCCO0GaDA==" length="74475429" type="application/octet-stream" /></item><item><title>Version 0.1.1-alpha</title><pubDate>Thu, 11 Dec 2025 21:03:24 +0000</pubDate><sparkle:version>4</sparkle:version><sparkle:shortVersionString>0.1.1-alpha</sparkle:shortVersionString><sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion><enclosure url="https://github.com/kdcokenny/OpenDictation/releases/download/v0.1.1-alpha/OpenDictation-0.1.1-alpha.dmg" sparkle:edSignature="5GtkePqOjelYweMaUDISgkU9Bch0suX+KPR5GhVNKRB1oInlA7FWdH6qMe3JsAz4M3/5mC4zGyFwquzAlWZYBQ==" length="74471873" type="application/octet-stream" /></item></channel>
+    <item>
+      <title>Version 0.1.1-alpha</title>
+      <pubDate>Thu, 11 Dec 2025 21:03:24 +0000</pubDate>
+      <sparkle:version>4</sparkle:version>
+      <sparkle:shortVersionString>0.1.1-alpha</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure 
+        url="https://github.com/kdcokenny/OpenDictation/releases/download/v0.1.1-alpha/OpenDictation-0.1.1-alpha.dmg" 
+        sparkle:edSignature="5GtkePqOjelYweMaUDISgkU9Bch0suX+KPR5GhVNKRB1oInlA7FWdH6qMe3JsAz4M3/5mC4zGyFwquzAlWZYBQ==" 
+        length="74471873" 
+        type="application/octet-stream" />
+    </item>
+  </channel>
 </rss>
