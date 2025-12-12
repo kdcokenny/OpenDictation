@@ -82,8 +82,8 @@ jobs:
           
           create-dmg \
             --volname "Open Dictation" \
-            --volicon "Sources/OpenDictation/Resources/DMG/VolumeIcon.icns" \
-            --background "Sources/OpenDictation/Resources/DMG/background.tiff" \
+          --volicon "OpenDictation/Resources/DMG/VolumeIcon.icns" \
+          --background "OpenDictation/Resources/DMG/background.tiff" \
             --window-pos 200 120 \
             --window-size 500 400 \
             --icon-size 70 \
@@ -166,7 +166,7 @@ jobs:
           ET.SubElement(item, 'pubDate').text = pub_date
           ET.SubElement(item, '{http://www.andymatuschak.org/xml-namespaces/sparkle}version').text = build
           ET.SubElement(item, '{http://www.andymatuschak.org/xml-namespaces/sparkle}shortVersionString').text = version
-          ET.SubElement(item, '{http://www.andymatuschak.org/xml-namespaces/sparkle}minimumSystemVersion').text = '14.0'
+          ET.SubElement(item, '{http://www.andymatuschak.org/xml-namespaces/sparkle}minimumSystemVersion').text = '26.0'
           
           enclosure = ET.SubElement(item, 'enclosure')
           enclosure.set('url', f'https://github.com/kdcokenny/OpenDictation/releases/download/v{version}/{dmg_name}')
