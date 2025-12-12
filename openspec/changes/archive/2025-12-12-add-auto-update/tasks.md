@@ -61,7 +61,7 @@
 
 ## 8. Validation
 
-- [ ] 8.1 Test manual "Check for Updates" works
-- [ ] 8.2 Test Settings toggles persist correctly
+- [x] 8.1 Test manual "Check for Updates" works
+- [x] 8.2 Test Settings toggles persist correctly
 - [x] 8.3 Verify appcast.xml is valid XML
-- [ ] 8.4 Test release workflow (dry run or actual release)
+- [x] 8.4 Test release workflow (dry run or actual release)
