@@ -5,13 +5,13 @@
 DEPS_DIR := deps
 WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
 FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
-MODELS_DIR := Sources/OpenDictation/Resources/Models
+MODELS_DIR := OpenDictation/Resources/Models
 
 # Model URLs (from Hugging Face)
 TINY_URL := https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
 SILERO_VAD_URL := https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
 
-.PHONY: all clean whisper models setup build check help dev reset release dmg run-release
+.PHONY: all clean whisper models setup build check help dev reset release dmg run-release run
 
 # Default target
 all: check setup build
@@ -23,7 +23,7 @@ dev: setup build run
 check:
 	@echo "Checking prerequisites..."
 	@command -v git >/dev/null 2>&1 || { echo "Error: git is not installed"; exit 1; }
-	@command -v swift >/dev/null 2>&1 || { echo "Error: swift is not installed"; exit 1; }
+	@command -v xcodebuild >/dev/null 2>&1 || { echo "Error: Xcode is not installed"; exit 1; }
 	@command -v curl >/dev/null 2>&1 || { echo "Error: curl is not installed"; exit 1; }
 	@echo "Prerequisites OK"
 
@@ -71,23 +71,30 @@ setup: whisper models
 	@echo ""
 	@echo "Next: run 'make build' to build the app"
 
-# Build the Swift package
+# Build the app (debug)
 build:
 	@echo "Building OpenDictation..."
-	swift build
+	@xcodebuild -project OpenDictation.xcodeproj \
+		-scheme OpenDictation \
+		-configuration Debug \
+		-derivedDataPath build \
+		build
+	@echo ""
+	@echo "Debug build complete!"
+	@echo "App: build/Build/Products/Debug/OpenDictation.app"
 
 # Run the app (debug build)
 run:
 	@echo "Running OpenDictation..."
-	swift run
+	@open build/Build/Products/Debug/OpenDictation.app
 
 # Clean build artifacts
 clean:
 	@echo "Cleaning..."
-	swift package clean
+	@rm -rf build
 	@echo "Clean complete"
 
-# Deep clean (removes deps and models)
+# Deep clean (removes deps and build)
 clean-all: clean
 	@echo "Removing dependencies..."
 	rm -rf $(DEPS_DIR)
@@ -102,11 +109,9 @@ reset:
 	@rm -rf ~/Library/Application\ Support/com.opendictation/Models/
 	@echo "Reset complete. Run 'make run' to test fresh install flow."
 
-# Build release app using xcodebuild (same as CI)
+# Build release app
 release:
-	@echo "Building release with xcodebuild..."
-	@command -v xcodegen >/dev/null 2>&1 || { echo "Installing xcodegen..."; brew install xcodegen; }
-	@xcodegen generate
+	@echo "Building release..."
 	@xcodebuild -project OpenDictation.xcodeproj \
 		-scheme OpenDictation \
 		-configuration Release \
@@ -124,8 +129,8 @@ dmg: release
 	@rm -f ~/Downloads/OpenDictation-local.dmg
 	@create-dmg \
 		--volname "Open Dictation" \
-		--volicon "Sources/OpenDictation/Resources/DMG/VolumeIcon.icns" \
-		--background "Sources/OpenDictation/Resources/DMG/background.tiff" \
+		--volicon "OpenDictation/Resources/DMG/VolumeIcon.icns" \
+		--background "OpenDictation/Resources/DMG/background.tiff" \
 		--window-pos 200 120 \
 		--window-size 500 400 \
 		--icon-size 70 \
@@ -150,14 +155,14 @@ help:
 	@echo "  whisper     Clone and build whisper.cpp XCFramework"
 	@echo "  models      Download bundled Whisper models"
 	@echo "  setup       Build framework + download models (run this first)"
-	@echo "  build       Build the Swift package (debug)"
+	@echo "  build       Build the app (debug)"
 	@echo "  run         Run the debug build"
 	@echo "  dev         Setup + build + run (for development)"
 	@echo "  all         Run check + setup + build (default)"
-	@echo "  clean       Clean Swift build artifacts"
+	@echo "  clean       Clean build artifacts"
 	@echo "  clean-all   Clean + remove deps directory"
 	@echo "  reset       Reset app state (clear prefs + downloaded models)"
-	@echo "  release     Build release app using xcodebuild (same as CI)"
+	@echo "  release     Build release version"
 	@echo "  dmg         Create DMG from release build"
 	@echo "  run-release Run the release build"
 	@echo "  help        Show this help message"
@@ -168,6 +173,6 @@ help:
 	@echo "  make run      # Run the app"
 	@echo ""
 	@echo "Release testing:"
-	@echo "  make release     # Build release version (same as CI)"
+	@echo "  make release     # Build release version"
 	@echo "  make dmg         # Create DMG for testing"
 	@echo "  make run-release # Run release build directly"

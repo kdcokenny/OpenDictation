@@ -2,61 +2,81 @@ name: OpenDictation
 options:
   bundleIdPrefix: com.opendictation
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "26.0"
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
   groupSortPosition: top
+
+configFiles:
+  Debug: Config.xcconfig
+  Release: Config.xcconfig
 
 settings:
   base:
     PRODUCT_NAME: Open Dictation
     PRODUCT_BUNDLE_IDENTIFIER: com.opendictation.app
-    MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
-    INFOPLIST_FILE: Sources/OpenDictation/Info.plist
+    INFOPLIST_FILE: OpenDictation/App/Info.plist
     CODE_SIGN_STYLE: Manual
     CODE_SIGNING_REQUIRED: NO
     CODE_SIGNING_ALLOWED: NO
     ENABLE_HARDENED_RUNTIME: NO
-    SWIFT_VERSION: "5.9"
+    SWIFT_VERSION: "6.0"
+    SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk
+    ARCHS: arm64
 
 packages:
   KeyboardShortcuts:
     url: https://github.com/sindresorhus/KeyboardShortcuts
-    from: "2.0.0"
+    from: "2.4.0"
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
-    exactVersion: "2.8.1"
+    from: "2.8.1"
+  Defaults:
+    url: https://github.com/sindresorhus/Defaults
+    from: "9.0.0"
+  LaunchAtLogin:
+    url: https://github.com/sindresorhus/LaunchAtLogin-Modern
+    from: "1.1.0"
 
 targets:
   OpenDictation:
     type: application
     platform: macOS
     sources:
-      - path: Sources/OpenDictation
+      - path: OpenDictation/App
         excludes:
           - Info.plist
-          - Resources/**
-      - path: Sources/OpenDictation/Resources/Sounds
+      - path: OpenDictation/Core
+      - path: OpenDictation/Views
+      - path: OpenDictation/Models
+      - path: OpenDictation/Extensions
+        optional: true
+      - path: OpenDictation/Utilities
+        optional: true
+      - path: OpenDictation/Resources/Sounds
         buildPhase: resources
         type: folder
-      - path: Sources/OpenDictation/Resources/Models
+      - path: OpenDictation/Resources/Models
         buildPhase: resources
         type: folder
-      - path: Sources/OpenDictation/Resources/Assets.xcassets
+      - path: OpenDictation/Resources/Assets.xcassets
         buildPhase: resources
+      - path: OpenDictation/Resources/DMG
+        buildPhase: resources
+        type: folder
     settings:
       base:
         PRODUCT_NAME: OpenDictation
         PRODUCT_BUNDLE_IDENTIFIER: com.opendictation.app
-        INFOPLIST_FILE: Sources/OpenDictation/Info.plist
+        INFOPLIST_FILE: OpenDictation/App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: OpenDictation/OpenDictation.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         LD_RUNPATH_SEARCH_PATHS: 
           - "@executable_path/../Frameworks"
           - "@loader_path/../Frameworks"
         FRAMEWORK_SEARCH_PATHS:
           - "$(inherited)"
-          - "deps/whisper.cpp/build-apple/whisper.xcframework/macos-arm64_x86_64"
+          - "$(PROJECT_DIR)/Frameworks"
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"
         SWIFT_ACTIVE_COMPILATION_CONDITIONS:
@@ -66,7 +86,9 @@ targets:
       - package: KeyboardShortcuts
       - package: Sparkle
         product: Sparkle
-      - framework: deps/whisper.cpp/build-apple/whisper.xcframework
+      - package: Defaults
+      - package: LaunchAtLogin
+      - framework: Frameworks/whisper.xcframework
         embed: true
     preBuildScripts: []
     postBuildScripts: []

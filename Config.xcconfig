@@ -1,0 +1,9 @@
+//
+//  Config.xcconfig
+//  OpenDictation
+//
+//  Version configuration - edit these values for releases
+//
+
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 1

@@ -5,7 +5,7 @@
   <p>
     <a href="https://github.com/kdcokenny/OpenDictation/releases/latest"><img src="https://img.shields.io/badge/download-latest-brightgreen?style=for-the-badge" alt="Download"></a>
     <img src="https://img.shields.io/badge/platform-macOS-blue?style=for-the-badge" alt="Platform">
-    <img src="https://img.shields.io/badge/requirements-macOS%2014%2B-fa4e49?style=for-the-badge" alt="Requirements">
+    <img src="https://img.shields.io/badge/requirements-macOS%2026%2B-fa4e49?style=for-the-badge" alt="Requirements">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge" alt="License"></a>
   </p>
 
@@ -19,8 +19,8 @@
 
 ### Requirements
 
-- macOS 14 (Sonoma) or later
-- Apple Silicon or Intel Mac
+- macOS 26 (Tahoe) or later
+- Apple Silicon Mac (M1 or later)
 
 > [!IMPORTANT]
 > Open Dictation requires **Accessibility** and **Microphone** permissions.

@@ -10,7 +10,7 @@ Open Dictation uses [Sparkle](https://sparkle-project.org/) for automatic update
    generate_keys
    ```
 
-2. Copy the public key to `Sources/OpenDictation/Info.plist`:
+2. Copy the public key to `OpenDictation/App/Info.plist`:
    ```xml
    <key>SUPublicEDKey</key>
    <string>YOUR_PUBLIC_KEY_HERE</string>
