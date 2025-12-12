@@ -40,6 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - NSApplicationDelegate
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Check if app should be moved to Applications (before other setup)
+        ApplicationMover.checkAndOfferToMoveToApplications()
+        
         setupStatusItem()
         setupServices()
         setupStateMachine()
@@ -58,10 +61,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - Setup
     
     private func setupStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         
         guard let button = statusItem?.button else { return }
-        button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Open Dictation")
+        // Use custom menu bar icon (template image for automatic light/dark mode adaptation)
+        if let icon = NSImage(named: "MenuBarIcon") {
+            icon.size = NSSize(width: 18, height: 18)
+            icon.isTemplate = true
+            icon.accessibilityDescription = "Open Dictation"
+            button.image = icon
+        } else {
+            // Fallback to SF Symbol if custom icon not found
+            button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Open Dictation")
+        }
         
         let menu = NSMenu()
         

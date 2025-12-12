@@ -23,8 +23,8 @@ jobs:
         with:
           xcode-version: latest-stable
       
-      - name: Install xcodegen
-        run: brew install xcodegen
+      - name: Install build tools
+        run: brew install xcodegen create-dmg
       
       - name: Get version from tag
         id: version
@@ -80,10 +80,18 @@ jobs:
           DMG_NAME="OpenDictation-$VERSION.dmg"
           APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release/OpenDictation.app"
           
-          hdiutil create -volname "Open Dictation" \
-            -srcfolder "$APP_PATH" \
-            -ov -format UDZO \
-            "$RUNNER_TEMP/$DMG_NAME"
+          create-dmg \
+            --volname "Open Dictation" \
+            --volicon "Sources/OpenDictation/Resources/DMG/VolumeIcon.icns" \
+            --background "Sources/OpenDictation/Resources/DMG/background.tiff" \
+            --window-pos 200 120 \
+            --window-size 500 400 \
+            --icon-size 70 \
+            --icon "OpenDictation.app" 100 200 \
+            --hide-extension "OpenDictation.app" \
+            --app-drop-link 350 200 \
+            "$RUNNER_TEMP/$DMG_NAME" \
+            "$APP_PATH"
           
           echo "DMG_PATH=$RUNNER_TEMP/$DMG_NAME" >> $GITHUB_ENV
           echo "DMG_NAME=$DMG_NAME" >> $GITHUB_ENV

@@ -43,11 +43,14 @@ targets:
       - path: Sources/OpenDictation/Resources/Models
         buildPhase: resources
         type: folder
+      - path: Sources/OpenDictation/Resources/Assets.xcassets
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: OpenDictation
         PRODUCT_BUNDLE_IDENTIFIER: com.opendictation.app
         INFOPLIST_FILE: Sources/OpenDictation/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         LD_RUNPATH_SEARCH_PATHS: 
           - "@executable_path/../Frameworks"
           - "@loader_path/../Frameworks"

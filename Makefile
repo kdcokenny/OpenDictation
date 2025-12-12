@@ -116,15 +116,24 @@ release:
 	@echo "Release build complete!"
 	@echo "App: build/Build/Products/Release/OpenDictation.app"
 
-# Create DMG from release build
+# Create styled DMG from release build
 dmg: release
-	@echo "Creating DMG..."
+	@echo "Creating styled DMG..."
+	@command -v create-dmg >/dev/null 2>&1 || { echo "Installing create-dmg..."; brew install create-dmg; }
 	@codesign --deep --force -s - build/Build/Products/Release/OpenDictation.app
 	@rm -f ~/Downloads/OpenDictation-local.dmg
-	@hdiutil create -volname "Open Dictation" \
-		-srcfolder build/Build/Products/Release/OpenDictation.app \
-		-ov -format UDZO \
-		~/Downloads/OpenDictation-local.dmg
+	@create-dmg \
+		--volname "Open Dictation" \
+		--volicon "Sources/OpenDictation/Resources/DMG/VolumeIcon.icns" \
+		--background "Sources/OpenDictation/Resources/DMG/background.tiff" \
+		--window-pos 200 120 \
+		--window-size 500 400 \
+		--icon-size 70 \
+		--icon "OpenDictation.app" 100 200 \
+		--hide-extension "OpenDictation.app" \
+		--app-drop-link 350 200 \
+		~/Downloads/OpenDictation-local.dmg \
+		build/Build/Products/Release/OpenDictation.app
 	@echo ""
 	@echo "DMG created: ~/Downloads/OpenDictation-local.dmg"
 
