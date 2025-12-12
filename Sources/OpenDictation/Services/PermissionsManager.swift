@@ -2,26 +2,34 @@ import AppKit
 import AVFoundation
 import Combine
 
-/// Manages system permissions required by Open Dictate.
+/// Manages system permissions required by Open Dictation.
 ///
-/// Handles checking and requesting Accessibility and Microphone permissions,
-/// with polling support to detect when users grant permissions via System Settings.
+/// Handles checking and requesting Accessibility and Microphone permissions.
+/// Uses DistributedNotificationCenter to detect permission changes in System Settings.
+///
+/// Key design principles (following Loop, iTerm2, VoiceInk, CodeLooper patterns):
+/// - Check permissions silently (no prompt) on launch
+/// - Prompt only once per app version for accessibility
+/// - Defer microphone prompt until user actually tries to record
+/// - Listen for permission changes via notification instead of polling
+/// - Show alert with choice for denied permissions (don't auto-open Settings)
+@MainActor
 final class PermissionsManager: ObservableObject {
+    
+    // MARK: - Constants
+    
+    private enum Keys {
+        static let accessibilityPromptedVersion = "PermissionsManager_AccessibilityPromptedVersion"
+    }
     
     // MARK: - Published Properties
     
     @Published private(set) var isAccessibilityGranted: Bool = false
     @Published private(set) var isMicrophoneGranted: Bool = false
     
-    /// Returns true only when both Accessibility and Microphone permissions are granted.
-    var allPermissionsGranted: Bool {
-        isAccessibilityGranted && isMicrophoneGranted
-    }
-    
     // MARK: - Private Properties
     
-    private var pollingTimer: Timer?
-    private let pollingInterval: TimeInterval = 1.0
+    private var accessibilityObserver: Task<Void, Never>?
     
     // MARK: - Initialization
     
@@ -30,74 +38,139 @@ final class PermissionsManager: ObservableObject {
     }
     
     deinit {
-        stopPolling()
+        accessibilityObserver?.cancel()
     }
     
     // MARK: - Public Methods
     
-    /// Refreshes the current status of all permissions.
+    /// Refreshes the current status of all permissions (no prompts).
     func refreshPermissionStatus() {
-        isAccessibilityGranted = checkAccessibilityPermission()
-        isMicrophoneGranted = checkMicrophonePermission()
+        isAccessibilityGranted = AXIsProcessTrusted()
+        isMicrophoneGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
     
-    /// Requests Accessibility permission by prompting the system dialog.
+    /// Starts observing permission changes via DistributedNotificationCenter.
     ///
-    /// This opens System Settings > Privacy & Security > Accessibility if the user
-    /// hasn't granted permission yet.
-    func requestAccessibility() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
+    /// This listens for the `com.apple.accessibility.api` notification which fires
+    /// when ANY app's accessibility permission changes in System Settings.
+    /// Much more efficient than polling.
+    func startObserving() {
+        guard accessibilityObserver == nil else { return }
         
-        // Update status after request
-        isAccessibilityGranted = checkAccessibilityPermission()
-    }
-    
-    /// Requests Microphone permission asynchronously.
-    ///
-    /// Call this during app setup so permission is determined before the user tries to record.
-    func requestMicrophone() {
-        let status = AVCaptureDevice.authorizationStatus(for: .audio)
-        
-        guard status == .notDetermined else {
-            // Already determined - just refresh status
-            isMicrophoneGranted = (status == .authorized)
-            return
-        }
-        
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
-            DispatchQueue.main.async {
-                self?.isMicrophoneGranted = granted
+        accessibilityObserver = Task { [weak self] in
+            let notificationName = Notification.Name("com.apple.accessibility.api")
+            let notifications = DistributedNotificationCenter.default().notifications(named: notificationName)
+            
+            for await _ in notifications {
+                // Notification fires before state updates - add small delay
+                // (Pattern from Loop, Squirrel, MonitorControl)
+                try? await Task.sleep(for: .milliseconds(250))
+                
+                await MainActor.run {
+                    self?.refreshPermissionStatus()
+                }
             }
         }
     }
     
-    /// Starts polling for permission status changes.
+    // MARK: - Accessibility Permission
+    
+    /// Requests Accessibility permission if not already prompted this app version.
     ///
-    /// This is useful because users may grant permissions in System Settings
-    /// outside of our app, and we need to detect when that happens.
-    func startPolling() {
-        guard pollingTimer == nil else { return }
+    /// Pattern from iTerm2: Only show the system prompt once per app version.
+    /// If already prompted this version, opens System Settings directly instead.
+    ///
+    /// - Returns: `true` if permission is granted, `false` if denied or pending.
+    @discardableResult
+    func requestAccessibilityIfNeeded() -> Bool {
+        // Already granted - no action needed
+        if isAccessibilityGranted {
+            return true
+        }
         
-        pollingTimer = Timer.scheduledTimer(withTimeInterval: pollingInterval, repeats: true) { [weak self] _ in
-            self?.refreshPermissionStatus()
+        // Check if we've already prompted this version
+        let currentVersion = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        let promptedVersion = UserDefaults.standard.string(forKey: Keys.accessibilityPromptedVersion)
+        
+        if currentVersion == promptedVersion {
+            // Already prompted this version - open System Settings directly (no spam)
+            openAccessibilitySettings()
+            return false
+        }
+        
+        // First prompt for this version - show system dialog
+        if let currentVersion = currentVersion {
+            UserDefaults.standard.set(currentVersion, forKey: Keys.accessibilityPromptedVersion)
+        }
+        
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let result = AXIsProcessTrustedWithOptions(options)
+        
+        // Update status after prompt
+        isAccessibilityGranted = result
+        return result
+    }
+    
+    /// Opens System Settings > Privacy & Security > Accessibility directly.
+    func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
         }
     }
     
-    /// Stops polling for permission status changes.
-    func stopPolling() {
-        pollingTimer?.invalidate()
-        pollingTimer = nil
+    // MARK: - Microphone Permission
+    
+    /// Requests Microphone permission asynchronously.
+    ///
+    /// Call this when the user actually tries to record, not on app launch.
+    /// This follows Apple's guidance to request permissions in context.
+    ///
+    /// - Parameter completion: Called with `true` if granted, `false` if denied.
+    func requestMicrophoneIfNeeded(completion: @escaping @MainActor (Bool) -> Void) {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        
+        switch status {
+        case .authorized:
+            isMicrophoneGranted = true
+            completion(true)
+            
+        case .notDetermined:
+            // First time - show system prompt
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                Task { @MainActor in
+                    self?.isMicrophoneGranted = granted
+                    completion(granted)
+                }
+            }
+            
+        case .denied, .restricted:
+            isMicrophoneGranted = false
+            // Show alert with choice instead of auto-opening Settings (CodeLooper pattern)
+            showMicrophonePermissionDeniedAlert()
+            completion(false)
+            
+        @unknown default:
+            isMicrophoneGranted = false
+            completion(false)
+        }
     }
     
     // MARK: - Private Methods
     
-    private func checkAccessibilityPermission() -> Bool {
-        AXIsProcessTrusted()
-    }
-    
-    private func checkMicrophonePermission() -> Bool {
-        let status = AVCaptureDevice.authorizationStatus(for: .audio)
-        return status == .authorized
+    /// Shows an alert when microphone permission is denied, with option to open Settings.
+    /// Pattern from CodeLooper - gives user choice instead of auto-opening Settings every time.
+    private func showMicrophonePermissionDeniedAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Microphone Access Required"
+        alert.informativeText = "Open Dictation needs microphone access to transcribe your speech. Please enable it in System Settings."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Cancel")
+        
+        if alert.runModal() == .alertFirstButtonReturn {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+                NSWorkspace.shared.open(url)
+            }
+        }
     }
 }

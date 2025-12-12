@@ -3,6 +3,7 @@ import SwiftUI
 import Combine
 import os.log
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     // MARK: - Logger
@@ -140,26 +141,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkeyService = HotkeyService()
         recordingService = RecordingService.shared
         
-        // Start permission polling
-        permissionsManager?.startPolling()
+        // Start listening for permission changes (via DistributedNotificationCenter)
+        permissionsManager?.startObserving()
         
-        // Log permission status on launch
+        // Log permission status on launch (no prompts - just checks)
         if let pm = permissionsManager {
             logger.debug("Accessibility granted: \(pm.isAccessibilityGranted)")
             logger.debug("Microphone granted: \(pm.isMicrophoneGranted)")
-            logger.debug("All permissions granted: \(pm.allPermissionsGranted)")
             
-            // Request accessibility permission if not granted (triggers system prompt)
-            if !pm.isAccessibilityGranted {
-                logger.info("Requesting Accessibility permission...")
-                pm.requestAccessibility()
-            }
-            
-            // Request microphone permission if not granted (async, non-blocking)
-            if !pm.isMicrophoneGranted {
-                logger.info("Requesting Microphone permission...")
-                pm.requestMicrophone()
-            }
+            // NOTE: Permissions are now requested lazily:
+            // - Accessibility: prompted once per version when hotkey is first pressed
+            // - Microphone: prompted when user first tries to record
         }
     }
     
@@ -170,18 +162,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Copy bundled model if this is first launch
             await ModelManager.shared.setupBundledModelIfNeeded()
             
-            // Set local mode as default if no API key is configured
-            let hasApiKey = KeychainService.shared.load(KeychainService.Key.apiKey) != nil
+            // First launch setup - default to local mode (no keychain access needed)
+            // Keychain is only accessed when user explicitly opens Settings or uses cloud mode
             let isFirstLaunch = !UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
             
             if isFirstLaunch {
                 UserDefaults.standard.set(true, forKey: "hasLaunchedBefore")
                 
-                // Default to local mode (works out of box)
-                if !hasApiKey {
-                    TranscriptionCoordinator.shared.currentMode = .local
-                    self.logger.info("First launch: defaulting to local transcription mode")
-                }
+                // Default to local mode unconditionally (works out of box, no API key check needed)
+                TranscriptionCoordinator.shared.currentMode = .local
+                self.logger.info("First launch: defaulting to local transcription mode")
             }
             
             // Validate current mode
@@ -264,14 +254,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // MARK: Recording callbacks
         
         sm.onStartRecording = { [weak self] in
-            do {
-                try self?.recordingService?.startRecording()
-                self?.logger.debug("Recording started")
-            } catch {
-                self?.logger.error("Failed to start recording: \(error.localizedDescription)")
-                // Trigger error state
-                DispatchQueue.main.async {
-                    self?.stateMachine?.send(.transcriptionFailed(error: error.localizedDescription))
+            guard let self = self else { return }
+            
+            // Check microphone permission first (deferred until user actually tries to record)
+            guard let pm = self.permissionsManager else { return }
+            
+            if pm.isMicrophoneGranted {
+                // Already granted - start recording immediately
+                self.startRecordingInternal()
+            } else {
+                // Request permission (will show system prompt if first time)
+                pm.requestMicrophoneIfNeeded { [weak self] granted in
+                    guard let self = self else { return }
+                    
+                    if granted {
+                        self.startRecordingInternal()
+                    } else {
+                        self.logger.warning("Microphone permission denied")
+                        self.stateMachine?.send(.transcriptionFailed(error: "Microphone access required. Please enable in System Settings."))
+                    }
                 }
             }
         }
@@ -356,13 +357,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .store(in: &cancellables)
         
         // Wire up hotkey service
-        hotkeyService?.onHotkeyPressed = { [weak sm] in
-            guard let sm = sm else { return }
+        hotkeyService?.onHotkeyPressed = { [weak sm, weak self] in
+            guard let sm = sm, let self = self else { return }
             
             // Toggle behavior: if recording, stop; otherwise start
             if sm.state == .recording {
                 sm.send(.hotkeyPressed)  // This stops recording
             } else if sm.state == .idle {
+                // Check accessibility permission before starting (needed for text insertion)
+                // This prompts once per version if not granted
+                if let pm = self.permissionsManager, !pm.isAccessibilityGranted {
+                    self.logger.info("Requesting accessibility permission on first hotkey press...")
+                    pm.requestAccessibilityIfNeeded()
+                    // Don't block - user can still record, will just get clipboard fallback
+                }
+                
                 sm.send(.hotkeyPressed)  // This starts recording
             }
             // Ignore hotkey in other states (processing, success, etc.)
@@ -487,6 +496,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     #endif
     
+    // MARK: - Recording Helpers
+    
+    /// Actually starts recording (called after permission is confirmed).
+    private func startRecordingInternal() {
+        do {
+            try recordingService?.startRecording()
+            logger.debug("Recording started")
+        } catch {
+            logger.error("Failed to start recording: \(error.localizedDescription)")
+            // Trigger error state
+            DispatchQueue.main.async { [weak self] in
+                self?.stateMachine?.send(.transcriptionFailed(error: error.localizedDescription))
+            }
+        }
+    }
+    
     // MARK: - Audio Feedback Helpers
     
     /// Plays a feedback sound and restores volume after a delay.
@@ -504,10 +529,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Switch to regular activation policy to allow keyboard input
         NSApp.setActivationPolicy(.regular)
         
-        // If window already exists, just bring it to front
+        // If window already exists, bring it to front properly (boring.notch pattern)
         if let window = settingsWindow, window.isVisible {
-            window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            window.orderFrontRegardless()
+            window.makeKeyAndOrderFront(nil)
             return
         }
         
@@ -524,8 +550,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.delegate = self  // To detect when window closes
         
         settingsWindow = window
+        
+        // Show window with proper ordering (boring.notch pattern)
+        // orderFrontRegardless forces window to front even when app is in accessory mode
+        window.orderFrontRegardless()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        
+        // Force window to front after activation for reliable focus
+        DispatchQueue.main.async {
+            window.makeKeyAndOrderFront(nil)
+        }
     }
     
     // MARK: - NSWindowDelegate

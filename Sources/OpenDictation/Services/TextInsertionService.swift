@@ -14,16 +14,28 @@ enum InsertionResult {
 ///
 /// Attempts direct insertion via Accessibility API first (preferred - doesn't touch clipboard).
 /// Falls back to clipboard + simulated Cmd+V paste for apps that don't support direct insertion.
+/// Gracefully degrades to clipboard-only if accessibility permission is not granted.
 final class TextInsertionService {
     
     private let textFieldDetector = TextFieldDetector()
     
     /// Inserts text if in a text field, otherwise copies to clipboard only.
     ///
+    /// Graceful degradation: If accessibility is not granted, falls back to clipboard-only
+    /// without prompting (VoiceInk pattern). User can still manually paste.
+    ///
     /// - Parameter text: The text to insert or copy.
     /// - Returns: `.inserted` if pasted into text field, `.copiedToClipboard` if clipboard only.
     func insertOrCopy(_ text: String) -> InsertionResult {
         let pasteboard = NSPasteboard.general
+        
+        // Graceful degradation: if no accessibility permission, just copy to clipboard
+        // Don't prompt - user will see "Copied to clipboard" feedback instead
+        guard AXIsProcessTrusted() else {
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            return .copiedToClipboard
+        }
         
         if textFieldDetector.isInTextField() {
             // Try Accessibility API first (doesn't touch clipboard)

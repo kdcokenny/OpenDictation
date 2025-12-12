@@ -123,9 +123,19 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 420, height: 480)
         .onAppear {
-            loadApiKey()
+            // Only load API key if already in cloud mode (rare - user changed mode previously)
+            if transcriptionMode == .cloud {
+                loadApiKey()
+            }
         }
-        .onChange(of: apiKey) { _, newValue in
+        .onChange(of: transcriptionModeRaw) { _, newValue in
+            // Load API key when user switches to cloud mode
+            if TranscriptionMode(rawValue: newValue) == .cloud {
+                loadApiKey()
+            }
+        }
+        .onChange(of: apiKey, initial: false) { _, newValue in
+            // Save API key changes (initial: false prevents firing on load)
             saveApiKey(newValue)
         }
     }
