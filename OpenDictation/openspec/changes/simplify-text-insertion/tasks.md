@@ -1,0 +1,4 @@
+- [ ] Remove `TextFieldDetector.swift` and its usages <!-- id: 100 -->
+- [ ] Refactor `TextInsertionService.swift` to remove accessibility insertion and implement universal paste <!-- id: 101 -->
+- [ ] Update `AppDelegate.swift` to use the simplified insertion service <!-- id: 102 -->
+- [ ] Verify `DictationStateMachine.swift` handles the simplified insertion result correctly <!-- id: 103 -->

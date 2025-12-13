@@ -241,8 +241,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         sm.onInsertText = { [weak self] text in
             guard let service = self?.textInsertionService else { return false }
-            let result = service.insertOrCopy(text)
-            return result == .inserted
+            // Returns true if paste was attempted (which maps to .success state in state machine)
+            // Returns false if fallback to clipboard occurred (which maps to .copiedToClipboard)
+            return service.insertText(text)
         }
         
         sm.onCancel = { [weak self] in
