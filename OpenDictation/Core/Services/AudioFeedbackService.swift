@@ -96,6 +96,12 @@ final class AudioFeedbackService {
         errorSound?.play()
     }
     
+    /// Play sound when no transcription detected (empty).
+    /// Uses system "Tink" sound for a subtle "nothing there" feel.
+    func playEmptySound() {
+        NSSound(named: "Tink")?.play()
+    }
+    
     // MARK: - Volume Ducking (using AudioDeviceDuck API)
     
     /// Duck other audio during recording using CoreAudio's AudioDeviceDuck.

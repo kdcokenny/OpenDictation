@@ -1,8 +1,15 @@
-# dictation-ui Specification
+# Dictation UI Spec Delta
 
-## Purpose
-TBD - created by archiving change pivot-floating-dictation-panel. Update Purpose after archive.
-## Requirements
+## REMOVED Requirements
+
+### Requirement: Floating Dictation Panel
+**Reason**: Replaced with notch-based UI that integrates with MacBook hardware notch.
+**Migration**: Users with notch MacBooks get the new notch UI. Users without notch Macs have no visual UI (audio feedback only). Non-notch users who want visual UI can file a feature request.
+
+---
+
+## MODIFIED Requirements
+
 ### Requirement: Waveform Visualization
 The system SHALL display a 5-bar waveform visualization during recording that responds to audio input levels.
 
@@ -82,102 +89,7 @@ The system SHALL animate the notch panel with native-feeling transitions.
 
 ---
 
-### Requirement: Text Field Detection
-The system SHALL detect whether the user is in a text input field before inserting text.
-
-Detection SHALL check in order:
-1. AXRole is one of: AXTextField, AXTextArea, AXSearchField, AXComboBox, AXSecureTextField
-2. AXSubrole is one of: AXSearchField, AXSecureTextField, AXTextInput
-3. AXEditable attribute is true
-4. AXActions contains "AXInsertText" or "AXDelete"
-
-If detection succeeds, the system SHALL use clipboard + paste insertion.
-If detection fails or Accessibility API is unavailable, the system SHALL copy to clipboard only.
-
-#### Scenario: In text field - auto paste
-- **WHEN** transcription completes successfully
-- **AND** the user is in a detected text field
-- **THEN** the text is copied to clipboard and pasted automatically
-
-#### Scenario: Not in text field - clipboard only
-- **WHEN** transcription completes successfully
-- **AND** the user is not in a detected text field
-- **THEN** the text is copied to clipboard only
-- **AND** no paste is performed
-
-#### Scenario: Accessibility API failure - graceful fallback
-- **WHEN** transcription completes successfully
-- **AND** the Accessibility API fails (permission denied or error)
-- **THEN** the text is copied to clipboard only
-- **AND** no error is shown to the user
-
----
-
-### Requirement: Toggle Hotkey Activation
-The system SHALL support toggle-based activation via a global hotkey.
-
-The hotkey SHALL:
-- Default to Option+Space (hardcoded for v1)
-- Work globally regardless of focused application
-- First press starts recording and shows panel
-- Second press stops recording and begins transcription
-- Escape key cancels and dismisses at any time
-
-#### Scenario: Start recording
-- **WHEN** the user presses the hotkey
-- **AND** dictation is not active
-- **THEN** recording starts and the panel appears
-
-#### Scenario: Stop recording
-- **WHEN** the user presses the hotkey
-- **AND** recording is in progress
-- **THEN** recording stops and transcription begins
-
-#### Scenario: Cancel with Escape
-- **WHEN** the user presses Escape
-- **AND** dictation is active (recording or processing)
-- **THEN** dictation is cancelled
-- **AND** audio is discarded
-- **AND** the panel dismisses
-
----
-
-### Requirement: Audio Feedback
-The system SHALL provide audio feedback during dictation.
-
-#### Scenario: Recording start sound
-- **WHEN** recording starts successfully
-- **THEN** the dictation start sound plays
-
-#### Scenario: Success sound
-- **WHEN** transcription completes and text is inserted/copied
-- **THEN** the dictation end sound plays (after volume restore)
-
-#### Scenario: Error sound
-- **WHEN** transcription fails with an error
-- **THEN** the dictation error sound plays
-
-#### Scenario: Empty result - no sound
-- **WHEN** transcription returns empty text
-- **THEN** no sound is played
-
----
-
-### Requirement: Volume Ducking
-The system SHALL duck system volume during recording to prevent audio interference.
-
-#### Scenario: Volume ducks on start
-- **WHEN** recording starts
-- **THEN** the system volume is saved and ducked to 0%
-
-#### Scenario: Volume restores on end
-- **WHEN** recording ends (any outcome)
-- **THEN** the system volume is restored over ~0.3 seconds
-- **AND** completion sounds play after volume restore
-
-#### Scenario: Volume restored on app quit
-- **WHEN** the application terminates during recording
-- **THEN** the system volume is restored to the saved level
+## ADDED Requirements
 
 ### Requirement: Notch-Based Panel
 The system SHALL display a Dynamic Island-style dictation panel that expands from the MacBook hardware notch.
@@ -236,4 +148,3 @@ The system SHALL gracefully handle devices without a hardware notch.
 #### Scenario: Feature request guidance
 - **WHEN** a non-notch Mac user wants visual UI
 - **THEN** documentation directs them to file a GitHub issue to request the feature
-

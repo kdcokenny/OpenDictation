@@ -1,8 +1,7 @@
-# overlay-panel Specification
+# Overlay Panel Spec Delta
 
-## Purpose
-TBD - created by archiving change add-foundation-architecture. Update Purpose after archive.
-## Requirements
+## MODIFIED Requirements
+
 ### Requirement: Non-Activating Window
 The overlay panel SHALL be an `NSWindow` subclass (not `NSPanel`) configured with `.borderless` and `.fullSizeContentView` style masks so it does not steal focus from the active application.
 
@@ -20,23 +19,6 @@ The overlay panel SHALL be an `NSWindow` subclass (not `NSPanel`) configured wit
 
 ---
 
-### Requirement: Cannot Become Key Window
-
-The overlay panel SHALL override `canBecomeKey` to return `false` to prevent it from ever becoming the key window.
-
-#### Scenario: Attempt to make key
-- **WHEN** the system or user attempts to make the panel the key window
-- **THEN** the panel refuses to become key
-- **AND** the current key window remains unchanged
-
-### Requirement: Cannot Become Main Window
-
-The overlay panel SHALL override `canBecomeMain` to return `false` to prevent it from ever becoming the main window.
-
-#### Scenario: Attempt to make main
-- **WHEN** the system attempts to make the panel the main window
-- **THEN** the panel refuses to become main
-
 ### Requirement: Floating Window Level
 The overlay panel SHALL have `level` set to `.statusBar + 8` so it appears above the menu bar and integrates with the notch area.
 
@@ -51,15 +33,6 @@ The overlay panel SHALL have `level` set to `.statusBar + 8` so it appears above
 - **THEN** the overlay panel appears above them
 
 ---
-
-### Requirement: Transparent Background
-
-The overlay panel SHALL have a transparent background (`backgroundColor = .clear`, `isOpaque = false`) to allow custom HUD styling.
-
-#### Scenario: Panel appearance
-- **WHEN** the overlay panel is displayed
-- **THEN** only the SwiftUI content is visible
-- **AND** there is no default window chrome or background
 
 ### Requirement: Available on All Spaces
 The overlay panel SHALL have `collectionBehavior` including `.canJoinAllSpaces` and `.stationary` so it appears regardless of which Space the user is on.
@@ -76,40 +49,7 @@ The overlay panel SHALL have `collectionBehavior` including `.canJoinAllSpaces` 
 
 ---
 
-### Requirement: Works with Fullscreen Apps
-
-The overlay panel SHALL have `collectionBehavior` including `.fullScreenAuxiliary` so it can appear over fullscreen applications.
-
-#### Scenario: Fullscreen app active
-- **WHEN** a fullscreen application is active
-- **AND** the overlay panel is shown
-- **THEN** the overlay panel appears over the fullscreen app
-
-### Requirement: Does Not Hide on Deactivate
-
-The overlay panel SHALL have `hidesOnDeactivate` set to `false` so it remains visible even when the app loses focus.
-
-#### Scenario: App loses focus
-- **WHEN** the overlay panel is visible
-- **AND** the user activates another application
-- **THEN** the overlay panel remains visible
-
-### Requirement: Show at Position
-
-The overlay panel SHALL provide a `show(at: CGPoint)` method that positions and displays the panel.
-
-#### Scenario: Show panel at caret
-- **WHEN** `show(at: CGPoint(x: 100, y: 200))` is called
-- **THEN** the panel's origin is set to (100, 200)
-- **AND** the panel becomes visible via `orderFrontRegardless()`
-
-### Requirement: Hide Panel
-
-The overlay panel SHALL provide a `hide()` method that removes the panel from screen.
-
-#### Scenario: Hide panel
-- **WHEN** `hide()` is called
-- **THEN** the panel is removed from screen via `orderOut(nil)`
+## ADDED Requirements
 
 ### Requirement: Notch-Aware Positioning
 The overlay panel SHALL position itself based on the hardware notch location.
@@ -185,4 +125,3 @@ The escape key handling SHALL:
 - **THEN** `canBecomeKey` returns `false`
 - **AND** the user's active application retains keyboard focus
 - **AND** typing continues in the active application
-

@@ -45,6 +45,13 @@ final class DictationStateMachine: ObservableObject {
     
     @Published private(set) var state: DictationState = .idle
     
+    // MARK: - Mock Mode
+    
+    /// When true, state transitions occur without triggering service callbacks.
+    /// Used for testing UI states without real recording/transcription.
+    /// Auto-disables when state returns to `.idle`.
+    var isMockMode: Bool = false
+    
     // MARK: - Callbacks
     
     /// Called when recording should start
@@ -77,12 +84,16 @@ final class DictationStateMachine: ObservableObject {
         case (.idle, .hotkeyPressed):
             state = .recording
             onShowPanel?()
-            onStartRecording?()
+            if !isMockMode {
+                onStartRecording?()
+            }
             
         // MARK: From Recording
         case (.recording, .hotkeyPressed),
              (.recording, .stopRecording):
-            onStopRecording?()
+            if !isMockMode {
+                onStopRecording?()
+            }
             // Don't transition yet - wait for transcription result or timeout
             // The transition to .processing happens via transcriptionStarted event
             
@@ -98,7 +109,9 @@ final class DictationStateMachine: ObservableObject {
             
         case (.recording, .escapePressed):
             state = .cancelled
-            onCancel?()
+            if !isMockMode {
+                onCancel?()
+            }
             // Panel will dismiss via dismissCompleted event
             
         // MARK: From Processing
@@ -110,16 +123,23 @@ final class DictationStateMachine: ObservableObject {
             
         case (.processing, .escapePressed):
             state = .cancelled
-            onCancel?()
+            if !isMockMode {
+                onCancel?()
+            }
             // Panel will dismiss via dismissCompleted event
             
         // MARK: From Terminal States
         case (.success, .dismissCompleted),
              (.copiedToClipboard, .dismissCompleted),
-             (.error, .dismissCompleted),
+             (.error(_), .dismissCompleted),
              (.empty, .dismissCompleted),
              (.cancelled, .dismissCompleted):
             state = .idle
+            // Auto-disable mock mode when returning to idle
+            if isMockMode {
+                isMockMode = false
+                logger.debug("Mock mode auto-disabled")
+            }
             
         // MARK: Invalid Transitions (Ignored)
         default:
@@ -147,9 +167,14 @@ final class DictationStateMachine: ObservableObject {
                 state = .empty
                 // Empty result - shake animation, no text insertion
             } else {
-                // Try to insert text, check if it was actually inserted or just clipboard
-                let wasInserted = onInsertText?(trimmed) ?? false
-                state = wasInserted ? .success : .copiedToClipboard
+                // In mock mode, skip text insertion and just go to success
+                if isMockMode {
+                    state = .success
+                } else {
+                    // Try to insert text, check if it was actually inserted or just clipboard
+                    let wasInserted = onInsertText?(trimmed) ?? false
+                    state = wasInserted ? .success : .copiedToClipboard
+                }
             }
             
         case .failure(let error):

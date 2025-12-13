@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     private var statusItem: NSStatusItem?
     private var permissionsManager: PermissionsManager?
-    private var overlayPanel: DictationOverlayPanel?
+    private var notchPanel: NotchOverlayPanel?
     private var textInsertionService: TextInsertionService?
     private var audioFeedbackService: AudioFeedbackService?
     private var hotkeyService: HotkeyService?
@@ -55,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Restore volume if still ducked (safety net)
         audioFeedbackService?.restoreVolume()
-        overlayPanel?.hide()
+        notchPanel?.hide()
     }
     
     // MARK: - Setup
@@ -81,31 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         #if DEBUG
         let debugMenu = NSMenu(title: "Debug")
         
-        let testNormalItem = NSMenuItem(title: "Test: Normal Flow", action: #selector(testNormalFlow), keyEquivalent: "")
-        testNormalItem.target = self
-        debugMenu.addItem(testNormalItem)
-        
-        let testFastPathItem = NSMenuItem(title: "Test: Fast Path", action: #selector(testFastPathFlow), keyEquivalent: "")
-        testFastPathItem.target = self
-        debugMenu.addItem(testFastPathItem)
-        
-        let testEmptyItem = NSMenuItem(title: "Test: Empty Result", action: #selector(testEmptyResultFlow), keyEquivalent: "")
-        testEmptyItem.target = self
-        debugMenu.addItem(testEmptyItem)
-        
-        let testErrorItem = NSMenuItem(title: "Test: Error", action: #selector(testErrorFlow), keyEquivalent: "")
+        let testErrorItem = NSMenuItem(title: "Test: Error State", action: #selector(testErrorFlow), keyEquivalent: "")
         testErrorItem.target = self
         debugMenu.addItem(testErrorItem)
-        
-        debugMenu.addItem(NSMenuItem.separator())
-        
-        let testCancelRecordingItem = NSMenuItem(title: "Test: Cancel Recording", action: #selector(testCancelRecordingFlow), keyEquivalent: "")
-        testCancelRecordingItem.target = self
-        debugMenu.addItem(testCancelRecordingItem)
-        
-        let testCancelProcessingItem = NSMenuItem(title: "Test: Cancel Processing", action: #selector(testCancelProcessingFlow), keyEquivalent: "")
-        testCancelProcessingItem.target = self
-        debugMenu.addItem(testCancelProcessingItem)
         
         let debugItem = NSMenuItem(title: "Debug", action: nil, keyEquivalent: "")
         debugItem.submenu = debugMenu
@@ -147,11 +125,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     private func setupServices() {
         permissionsManager = PermissionsManager()
-        overlayPanel = DictationOverlayPanel()
         textInsertionService = TextInsertionService()
         audioFeedbackService = AudioFeedbackService()
         hotkeyService = HotkeyService()
         recordingService = RecordingService.shared
+        
+        // Create notch panel only if device has hardware notch
+        // Non-notch Macs get audio feedback only (no visual UI)
+        if let notchScreen = NSScreen.screenWithNotch {
+            notchPanel = NotchOverlayPanel(screen: notchScreen)
+            logger.info("Notch detected - using notch-based dictation UI")
+        } else {
+            logger.info("No notch detected - audio feedback only (no visual UI)")
+        }
         
         // Start listening for permission changes (via DistributedNotificationCenter)
         permissionsManager?.startObserving()
@@ -200,12 +186,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let sm = DictationStateMachine()
         stateMachine = sm
         
-        // Wire up panel callbacks
-        overlayPanel?.onEscapePressed = { [weak sm] in
+        // Wire up panel callbacks (only if notch panel exists)
+        notchPanel?.onEscapePressed = { [weak sm] in
             sm?.send(.escapePressed)
         }
         
-        overlayPanel?.onDismissCompleted = { [weak sm] in
+        notchPanel?.onDismissCompleted = { [weak sm] in
             sm?.send(.dismissCompleted)
         }
         
@@ -213,7 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         recordingService?.$audioLevel
             .receive(on: DispatchQueue.main)
             .sink { [weak self] level in
-                self?.overlayPanel?.setAudioLevel(level)
+                self?.notchPanel?.setAudioLevel(level)
             }
             .store(in: &cancellables)
         
@@ -225,23 +211,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + Timing.volumeDuckRampDelay) {
                 self?.audioFeedbackService?.playStartSound()
             }
-            self?.overlayPanel?.show()
+            // Only show panel if notch exists (non-notch Macs get audio feedback only)
+            self?.notchPanel?.show()
         }
         
         sm.onHidePanel = { [weak self, weak sm] in
             guard let self = self, let sm = sm else { return }
             
+            // Only hide panel if it exists (non-notch Macs skip this)
+            guard let panel = self.notchPanel else {
+                // No panel - just trigger dismiss completed callback
+                sm.send(.dismissCompleted)
+                return
+            }
+            
             switch sm.state {
             case .success:
-                self.overlayPanel?.showSuccessAndDismiss()
+                panel.showSuccessAndDismiss()
             case .copiedToClipboard:
-                self.overlayPanel?.showClipboardAndDismiss()
-            case .error:
-                self.overlayPanel?.showErrorAndDismiss()
+                panel.showClipboardAndDismiss()
+            case .error(_):
+                panel.showErrorAndDismiss()
             case .empty:
-                self.overlayPanel?.showEmptyAndDismiss()
+                panel.showEmptyAndDismiss()
             default:
-                self.overlayPanel?.hide()
+                panel.hide()
             }
         }
         
@@ -260,7 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.recordingService?.stopRecording()
             self?.recordingService?.deleteRecording()
             
-            self?.overlayPanel?.hide()
+            self?.notchPanel?.hide()
         }
         
         // MARK: Recording callbacks
@@ -347,22 +341,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .sink { [weak self] state in
                 switch state {
                 case .recording:
-                    self?.overlayPanel?.setVisualState(.recording)
+                    self?.notchPanel?.setVisualState(.recording)
                 case .processing:
-                    self?.overlayPanel?.setVisualState(.processing)
+                    self?.notchPanel?.setVisualState(.processing)
                 case .success:
                     self?.playFeedbackAndRestoreVolume { $0.playSuccessSound() }
-                    self?.overlayPanel?.setVisualState(.success)
+                    self?.notchPanel?.setVisualState(.success)
                 case .copiedToClipboard:
                     self?.playFeedbackAndRestoreVolume { $0.playSuccessSound() }
-                    self?.overlayPanel?.setVisualState(.copiedToClipboard)
-                case .error:
+                    self?.notchPanel?.setVisualState(.copiedToClipboard)
+                case .error(_):
                     self?.playFeedbackAndRestoreVolume { $0.playErrorSound() }
-                    self?.overlayPanel?.setVisualState(.error)
+                    self?.notchPanel?.setVisualState(.error)
                 case .empty:
-                    // No sound for empty, just restore
-                    self?.audioFeedbackService?.restoreVolume()
-                    self?.overlayPanel?.setVisualState(.empty)
+                    self?.playFeedbackAndRestoreVolume { $0.playEmptySound() }
+                    self?.notchPanel?.setVisualState(.empty)
                 case .cancelled:
                     // No sound for cancel, just restore
                     self?.audioFeedbackService?.restoreVolume()
@@ -401,111 +394,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     #if DEBUG
     
-    /// Tests normal flow: recording → processing → success → text insertion
-    @objc private func testNormalFlow() {
-        guard let sm = stateMachine else { return }
-        
-        print("[Test] Normal Flow: recording → processing → success")
-        sm.send(.hotkeyPressed)
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak sm] in
-            sm?.send(.stopRecording)
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak sm] in
-                sm?.send(.transcriptionStarted)
-            }
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak sm] in
-                sm?.send(.transcriptionCompleted(text: "Hello, this is a sample transcription from Open Dictation!"))
-            }
-        }
-    }
-    
-    /// Tests fast path: recording → immediate success (skips processing animation)
-    @objc private func testFastPathFlow() {
-        guard let sm = stateMachine else { return }
-        
-        print("[Test] Fast Path: recording → immediate success (skip processing)")
-        sm.send(.hotkeyPressed)
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak sm] in
-            sm?.send(.stopRecording)
-            
-            // Complete immediately (within 0.5s threshold) - no transcriptionStarted
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak sm] in
-                sm?.send(.transcriptionCompleted(text: "Quick transcription!"))
-            }
-        }
-    }
-    
-    /// Tests empty result flow: recording → processing → empty (shake animation)
-    @objc private func testEmptyResultFlow() {
-        guard let sm = stateMachine else { return }
-        
-        print("[Test] Empty Result: recording → processing → empty (shake)")
-        sm.send(.hotkeyPressed)
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak sm] in
-            sm?.send(.stopRecording)
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak sm] in
-                sm?.send(.transcriptionStarted)
-            }
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak sm] in
-                sm?.send(.transcriptionCompleted(text: "   ")) // Whitespace only
-            }
-        }
-    }
-    
-    /// Tests error flow: recording → processing → error (red tint)
+    /// Tests error flow using mock mode (no real recording/transcription)
     @objc private func testErrorFlow() {
         guard let sm = stateMachine else { return }
         
-        print("[Test] Error: recording → processing → error (red tint)")
-        sm.send(.hotkeyPressed)
+        // Enable mock mode to prevent real recording
+        sm.isMockMode = true
+        
+        print("[Test] Error: recording → processing → error (mock mode)")
+        sm.send(.hotkeyPressed)  // → .recording (no real recording)
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak sm] in
             sm?.send(.stopRecording)
             
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak sm] in
-                sm?.send(.transcriptionStarted)
+                sm?.send(.transcriptionStarted)  // → .processing
             }
             
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak sm] in
-                sm?.send(.transcriptionFailed(error: "Network connection failed"))
-            }
-        }
-    }
-    
-    /// Tests cancel during recording: recording → escape → cancelled
-    @objc private func testCancelRecordingFlow() {
-        guard let sm = stateMachine else { return }
-        
-        print("[Test] Cancel Recording: recording → escape → cancelled")
-        sm.send(.hotkeyPressed)
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak sm] in
-            sm?.send(.escapePressed)
-        }
-    }
-    
-    /// Tests cancel during processing: recording → processing → escape → cancelled
-    @objc private func testCancelProcessingFlow() {
-        guard let sm = stateMachine else { return }
-        
-        print("[Test] Cancel Processing: recording → processing → escape → cancelled")
-        sm.send(.hotkeyPressed)
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak sm] in
-            sm?.send(.stopRecording)
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak sm] in
-                sm?.send(.transcriptionStarted)
-            }
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak sm] in
-                sm?.send(.escapePressed)
+                sm?.send(.transcriptionFailed(error: "Network connection failed"))  // → .error
+                // Mock mode auto-disables when state returns to .idle
             }
         }
     }

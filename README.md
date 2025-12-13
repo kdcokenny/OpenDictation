@@ -21,10 +21,14 @@
 
 - macOS 26 (Tahoe) or later
 - Apple Silicon Mac (M1 or later)
+- **MacBook with notch** for visual UI (2021 MacBook Pro, 2022+ MacBook Air)
 
 > [!IMPORTANT]
 > Open Dictation requires **Accessibility** and **Microphone** permissions.
 > You'll be prompted to grant these on first launch.
+
+> [!NOTE]
+> **Non-notch Macs**: Dictation still works but without visual feedback. You'll hear audio cues (start/stop sounds) to indicate state. If you'd like visual UI support for non-notch Macs, please [file a feature request](https://github.com/kdcokenny/OpenDictation/issues/new).
 
 ### Download
 
@@ -97,7 +101,7 @@ Whisper models are stored in `~/Library/Application Support/com.opendictation/Mo
 
 ## Features
 
-- **Native macOS experience** — Floating panel that doesn't steal focus
+- **Dynamic Island-style UI** — Notch-integrated dictation panel on MacBooks with notch
 - **Local transcription** — Run Whisper models on-device for privacy
 - **Cloud transcription** — Connect to OpenAI, Groq, or any compatible API
 - **Smart text insertion** — Automatically pastes into the active field
