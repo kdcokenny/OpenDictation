@@ -1,7 +1,7 @@
 import AppKit
-import AppKit
 import SwiftUI
 import CoreGraphics
+import os.log
 
 /// A notch-based overlay panel that displays the dictation UI.
 ///
@@ -256,7 +256,9 @@ final class EventMonitor {
             callback: eventTapCallback,
             userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
         ) else {
-            print("Failed to create event tap - permission missing?")
+            // This should never happen if accessibility was checked on launch
+            let logger = Logger(subsystem: "com.opendictation", category: "EventMonitor")
+            logger.error("Failed to create event tap - accessibility permission required. Escape key will not work.")
             return
         }
         

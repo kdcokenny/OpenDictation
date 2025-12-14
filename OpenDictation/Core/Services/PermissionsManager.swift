@@ -77,6 +77,86 @@ final class PermissionsManager: ObservableObject {
         }
     }
     
+    // MARK: - Launch-Time Permission Check
+    
+    /// Checks accessibility permission on app launch with custom UI.
+    ///
+    /// This method follows the pattern from Touch Bar Simulator by Sindre Sorhus:
+    /// - Returns immediately if permission already granted
+    /// - Opens System Settings to Accessibility pane
+    /// - Shows custom alert explaining what's needed
+    /// - Offers "Continue" or "Quit" buttons
+    /// - Relaunches app after user grants permission
+    ///
+    /// This prevents the escape key bug by ensuring accessibility is granted
+    /// before any event taps are created.
+    func checkAccessibilityOnLaunch() {
+        // We intentionally don't use the system prompt as our dialog explains it better.
+        // Use the raw string value to avoid Swift 6 concurrency issues with the global constant
+        // kAXTrustedCheckOptionPrompt's value is "AXTrustedCheckOptionPrompt"
+        let options = ["AXTrustedCheckOptionPrompt": false] as CFDictionary
+        if AXIsProcessTrustedWithOptions(options) {
+            // Already granted - update status and continue
+            isAccessibilityGranted = true
+            return
+        }
+        
+        // Open System Settings to Accessibility pane
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+        
+        // Force our app to front so alert appears on top (Clipy pattern)
+        NSApp.activate(ignoringOtherApps: true)
+        
+        // Show custom alert explaining what's needed
+        let alert = NSAlert()
+        alert.messageText = "Open Dictation needs accessibility access."
+        alert.informativeText = """
+        Open Dictation needs accessibility to paste transcribed text directly into other apps.
+        
+        In the System Settings window that just opened, find "Open Dictation" in the list and check its checkbox. Then click the "Continue" button here.
+        """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Quit")
+        
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            // User clicked "Quit"
+            NSApp.terminate(nil)
+            return
+        }
+        
+        // Verify user actually granted permission before relaunching
+        // This prevents infinite loop if user clicks "Continue" without granting permission
+        if !AXIsProcessTrustedWithOptions(options) {
+            // Still not granted - show error and quit
+            let errorAlert = NSAlert()
+            errorAlert.messageText = "Permission not granted"
+            errorAlert.informativeText = "Open Dictation cannot continue without accessibility permission. Please enable it in System Settings and relaunch the app."
+            errorAlert.alertStyle = .critical
+            errorAlert.addButton(withTitle: "Quit")
+            errorAlert.runModal()
+            NSApp.terminate(nil)
+            return
+        }
+        
+        // Permission granted - relaunch to ensure clean state
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    NSApp.presentError(error)
+                    return
+                }
+                
+                NSApp.terminate(nil)
+            }
+        }
+    }
+    
     // MARK: - Accessibility Permission
     
     /// Requests Accessibility permission if not already prompted this app version.

@@ -40,6 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - NSApplicationDelegate
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // MARK: - Accessibility Permission Check
+        // Check accessibility FIRST - before any other setup.
+        // This prevents the escape key bug by ensuring event taps can be created.
+        // Pattern from Touch Bar Simulator by Sindre Sorhus.
+        permissionsManager = PermissionsManager()
+        permissionsManager?.checkAccessibilityOnLaunch()
+        
+        // MARK: - App Setup
         // Check if app should be moved to Applications (before other setup)
         ApplicationMover.checkAndOfferToMoveToApplications()
         
@@ -142,7 +150,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     private func setupServices() {
-        permissionsManager = PermissionsManager()
+        // PermissionsManager already initialized in applicationDidFinishLaunching
+        // to check accessibility on launch
+        if permissionsManager == nil {
+            permissionsManager = PermissionsManager()
+        }
+        
         textInsertionService = TextInsertionService()
         audioFeedbackService = AudioFeedbackService()
         hotkeyService = HotkeyService()
@@ -370,21 +383,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .store(in: &cancellables)
         
         // Wire up hotkey service
-        hotkeyService?.onHotkeyPressed = { [weak sm, weak self] in
-            guard let sm = sm, let self = self else { return }
+        hotkeyService?.onHotkeyPressed = { [weak sm] in
+            guard let sm = sm else { return }
             
             // Toggle behavior: if recording, stop; otherwise start
             if sm.state == .recording {
                 sm.send(.hotkeyPressed)  // This stops recording
             } else if sm.state == .idle {
-                // Check accessibility permission before starting (needed for text insertion)
-                // This prompts once per version if not granted
-                if let pm = self.permissionsManager, !pm.isAccessibilityGranted {
-                    self.logger.info("Requesting accessibility permission on first hotkey press...")
-                    pm.requestAccessibilityIfNeeded()
-                    // Don't block - user can still record, will just get clipboard fallback
-                }
-                
                 sm.send(.hotkeyPressed)  // This starts recording
             }
             // Ignore hotkey in other states (processing, success, etc.)
