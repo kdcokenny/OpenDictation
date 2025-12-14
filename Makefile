@@ -73,20 +73,20 @@ setup: whisper models
 
 # Build the app (debug)
 build:
-	@echo "Building OpenDictation..."
+	@echo "Building OpenDictation Dev..."
 	@xcodebuild -project OpenDictation.xcodeproj \
 		-scheme OpenDictation \
-		-configuration Debug \
+		-configuration "Debug (Dev)" \
 		-derivedDataPath build \
 		build
 	@echo ""
 	@echo "Debug build complete!"
-	@echo "App: build/Build/Products/Debug/OpenDictation.app"
+	@echo "App: build/Build/Products/Debug (Dev)/OpenDictation Dev.app"
 
 # Run the app (debug build)
 run:
-	@echo "Running OpenDictation..."
-	@open build/Build/Products/Debug/OpenDictation.app
+	@echo "Running OpenDictation Dev..."
+	@open "build/Build/Products/Debug (Dev)/OpenDictation Dev.app"
 
 # Clean build artifacts
 clean:

@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Open Dictation</string>
+    <string>$(PRODUCT_NAME)</string>
     <key>CFBundleDisplayName</key>
-    <string>Open Dictation</string>
+    <string>$(PRODUCT_NAME)</string>
     <key>CFBundleIdentifier</key>
-    <string>com.opendictation.app</string>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
     <key>CFBundleVersion</key>
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>CFBundleShortVersionString</key>
@@ -15,7 +15,7 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>OpenDictation</string>
+    <string>$(EXECUTABLE_NAME)</string>
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
     <key>LSUIElement</key>

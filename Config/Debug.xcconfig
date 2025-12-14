@@ -1,0 +1,5 @@
+#include "Shared.xcconfig"
+
+// Standard Debug Build
+PRODUCT_NAME = OpenDictation
+PRODUCT_BUNDLE_IDENTIFIER = com.opendictation

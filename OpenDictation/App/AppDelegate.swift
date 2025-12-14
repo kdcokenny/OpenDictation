@@ -48,11 +48,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setupStateMachine()
         setupLocalTranscription()
         
+        // Observe screen configuration changes to rebuild the UI if needed
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(rebuildNotchUI),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+        
+        // Perform initial UI setup
+        rebuildNotchUI()
+        
         // Initialize updater (starts automatic update checks)
         _ = UpdateService.shared
     }
     
     func applicationWillTerminate(_ notification: Notification) {
+        // Remove screen change observer
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+        
         // Restore volume if still ducked (safety net)
         audioFeedbackService?.restoreVolume()
         notchPanel?.hide()
@@ -130,15 +148,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkeyService = HotkeyService()
         recordingService = RecordingService.shared
         
-        // Create notch panel only if device has hardware notch
-        // Non-notch Macs get audio feedback only (no visual UI)
-        if let notchScreen = NSScreen.screenWithNotch {
-            notchPanel = NotchOverlayPanel(screen: notchScreen)
-            logger.info("Notch detected - using notch-based dictation UI")
-        } else {
-            logger.info("No notch detected - audio feedback only (no visual UI)")
-        }
-        
         // Start listening for permission changes (via DistributedNotificationCenter)
         permissionsManager?.startObserving()
         
@@ -187,13 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         stateMachine = sm
         
         // Wire up panel callbacks (only if notch panel exists)
-        notchPanel?.onEscapePressed = { [weak sm] in
-            sm?.send(.escapePressed)
-        }
-        
-        notchPanel?.onDismissCompleted = { [weak sm] in
-            sm?.send(.dismissCompleted)
-        }
+        wireNotchPanelCallbacks()
         
         // Wire up audio level for real-time waveform visualization
         recordingService?.$audioLevel
@@ -420,6 +423,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     #endif
+    
+    // MARK: - Panel Callbacks
+    
+    /// Wires up notch panel callbacks to the state machine.
+    /// Extracted to a method so it can be re-called after panel recreation during screen changes.
+    private func wireNotchPanelCallbacks() {
+        guard let sm = stateMachine else { return }
+        
+        notchPanel?.onEscapePressed = { [weak sm] in
+            sm?.send(.escapePressed)
+        }
+        
+        notchPanel?.onDismissCompleted = { [weak sm] in
+            sm?.send(.dismissCompleted)
+        }
+    }
+    
+    // MARK: - Screen Change Handling
+    
+    /// Rebuilds the notch UI from scratch.
+    ///
+    /// This method follows the stateless "destroy and recreate" pattern from NotchDrop.
+    /// It's called on app launch and any time screen parameters change.
+    @objc private func rebuildNotchUI() {
+        // 1. Cancel any active session to ensure a clean state
+        if stateMachine?.state != .idle {
+            logger.info("Screen change detected during active session, cancelling...")
+            stateMachine?.send(.escapePressed)
+        }
+        
+        // 2. Destroy the existing panel completely
+        notchPanel?.hide()
+        notchPanel = nil
+        
+        // 3. Find the correct screen and recreate the panel
+        if let screen = NSScreen.findScreenForNotch() {
+            logger.info("Notch screen found, rebuilding UI.")
+            notchPanel = NotchOverlayPanel(screen: screen)
+            wireNotchPanelCallbacks() // Re-wire callbacks to the new panel instance
+        } else {
+            logger.info("No notch screen found, UI will not be shown.")
+        }
+    }
     
     // MARK: - Recording Helpers
     

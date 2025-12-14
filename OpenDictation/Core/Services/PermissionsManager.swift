@@ -27,6 +27,9 @@ final class PermissionsManager: ObservableObject {
     @Published private(set) var isAccessibilityGranted: Bool = false
     @Published private(set) var isMicrophoneGranted: Bool = false
     
+    /// Publishes when accessibility permissions have been updated.
+    let accessibilityDidUpdate = PassthroughSubject<Void, Never>()
+    
     // MARK: - Private Properties
     
     private var accessibilityObserver: Task<Void, Never>?
@@ -68,6 +71,7 @@ final class PermissionsManager: ObservableObject {
                 
                 await MainActor.run {
                     self?.refreshPermissionStatus()
+                    self?.accessibilityDidUpdate.send()
                 }
             }
         }

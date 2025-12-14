@@ -7,14 +7,18 @@ options:
   generateEmptyDirectories: true
   groupSortPosition: top
 
+configs:
+  Debug: debug
+  "Debug (Dev)": debug
+  Release: release
+
 configFiles:
-  Debug: Config.xcconfig
+  "Debug (Dev)": Config/Debug-Dev.xcconfig
+  Debug: Config/Debug.xcconfig
   Release: Config.xcconfig
 
 settings:
   base:
-    PRODUCT_NAME: Open Dictation
-    PRODUCT_BUNDLE_IDENTIFIER: com.opendictation.app
     INFOPLIST_FILE: OpenDictation/App/Info.plist
     CODE_SIGN_STYLE: Manual
     CODE_SIGNING_REQUIRED: NO
@@ -66,8 +70,6 @@ targets:
         type: folder
     settings:
       base:
-        PRODUCT_NAME: OpenDictation
-        PRODUCT_BUNDLE_IDENTIFIER: com.opendictation.app
         INFOPLIST_FILE: OpenDictation/App/Info.plist
         CODE_SIGN_ENTITLEMENTS: OpenDictation/OpenDictation.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

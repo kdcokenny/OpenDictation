@@ -44,9 +44,19 @@ extension NSScreen {
         )
     }
 
-    /// Returns the screen with a hardware notch, or nil if none exists.
-    /// Typically this is the built-in display on notch MacBooks.
-    static var screenWithNotch: NSScreen? {
-        screens.first { $0.hasNotch }
+    /// Whether this is the built-in display.
+    /// Source: Lakr233/NotchDrop
+    var isBuiltin: Bool {
+        let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
+        guard let id = deviceDescription[screenNumberKey] as? NSNumber else { return false }
+        return CGDisplayIsBuiltin(id.uint32Value) != 0
+    }
+
+    /// Finds the correct screen for the notch UI.
+    ///
+    /// Prioritizes the built-in display if it has a notch. This is the most reliable
+    /// way to ensure the UI appears on the correct screen.
+    static func findScreenForNotch() -> NSScreen? {
+        return NSScreen.screens.first { $0.isBuiltin && $0.hasNotch }
     }
 }
