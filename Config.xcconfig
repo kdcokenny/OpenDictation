@@ -2,8 +2,10 @@
 //  Config.xcconfig
 //  OpenDictation
 //
-//  Version configuration - edit these values for releases
+//  Version configuration
+//  Note: These are placeholder values for dev builds.
+//  Release builds inject actual version from git tag.
 //
 
-MARKETING_VERSION = 0.1.8-alpha
-CURRENT_PROJECT_VERSION = 13
+MARKETING_VERSION = 0.0.0-dev
+CURRENT_PROJECT_VERSION = 0

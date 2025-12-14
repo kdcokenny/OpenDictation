@@ -49,6 +49,8 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
       
+      
+      
       - name: Build with xcodebuild
         run: |
           xcodebuild -project OpenDictation.xcodeproj \
@@ -59,6 +61,29 @@ jobs:
           
           echo "Build complete"
           ls -la "$RUNNER_TEMP/DerivedData/Build/Products/Release/"
+      
+      - name: Inject version into built app
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release/OpenDictation.app"
+          INFO_PLIST="$APP_PATH/Contents/Info.plist"
+          
+          echo "Injecting version into built app..."
+          echo "Marketing version: $VERSION"
+          echo "Build number: $GITHUB_RUN_NUMBER"
+          
+          # Set marketing version
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$INFO_PLIST"
+          
+          # Set build number
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" "$INFO_PLIST"
+          
+          # Verify injection
+          echo "Verification:"
+          echo "  CFBundleShortVersionString: $(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST")"
+          echo "  CFBundleVersion: $(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$INFO_PLIST")"
+          
+          echo "Version injection complete"
       
       - name: Sign app bundle
         run: |
