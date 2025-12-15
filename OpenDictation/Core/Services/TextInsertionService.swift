@@ -5,21 +5,66 @@ import os.log
 
 /// Service for inserting text into the focused application via Universal Paste.
 ///
-/// Implements the "Always Paste" strategy:
-/// 1. Save current clipboard state
-/// 2. Set text to clipboard
-/// 3. Simulate Cmd+V via CGEvent
-/// 4. Restore previous clipboard state after a delay
+/// Implements the "Always Paste" strategy with Apple-quality hardening:
+/// 1. Save current clipboard state (all types, not just string)
+/// 2. Set text to clipboard with verification
+/// 3. Simulate Cmd+V via CGEvent with explicit key events
+/// 4. Restore previous clipboard state after synchronous delay
+///
+/// Hardening techniques from industry analysis:
+/// - `.combinedSessionState` for proper event coordination
+/// - 50ms clipboard stabilization delay before paste
+/// - 150ms synchronous delay for paste completion
+/// - Full pasteboard preservation (all types)
+/// - Concurrency lock to prevent overlapping operations
+/// - Event source suppression to prevent input interference
+/// - Explicit Command key events for maximum app compatibility
 @MainActor
 final class TextInsertionService {
     
     private let logger = Logger(subsystem: "com.opendictation", category: "TextInsertionService")
+    
+    // MARK: - Concurrency Control
+    
+    /// Lock protecting insertion state to prevent concurrent paste operations
+    private static let insertionLock = NSLock()
+    
+    /// Flag indicating if a paste operation is in progress
+    private static var isInserting = false
+    
+    // MARK: - Saved Clipboard State
+    
+    /// Saved pasteboard contents for restoration
+    private struct SavedPasteboardContents {
+        let items: [[NSPasteboard.PasteboardType: Data]]
+    }
+    
+    // MARK: - Public API
     
     /// Inserts text using the universal paste method.
     ///
     /// - Parameter text: The text to insert.
     /// - Returns: `true` if text was sent to clipboard and paste was attempted.
     func insertText(_ text: String) -> Bool {
+        // Acquire lock and check for concurrent operation
+        Self.insertionLock.lock()
+        
+        guard !Self.isInserting else {
+            Self.insertionLock.unlock()
+            logger.warning("Paste operation already in progress, rejecting concurrent call")
+            return false
+        }
+        
+        Self.isInserting = true
+        Self.insertionLock.unlock()
+        
+        // Ensure flag is always reset on exit
+        defer {
+            Self.insertionLock.lock()
+            Self.isInserting = false
+            Self.insertionLock.unlock()
+        }
+        
         let pasteboard = NSPasteboard.general
         
         // 1. Guard: Check Accessibility Permissions
@@ -31,36 +76,34 @@ final class TextInsertionService {
             return false // Indicates fallback to clipboard-only (no paste attempted)
         }
         
-        // 2. Save previous clipboard contents
-        let previousString = pasteboard.string(forType: .string)
-        // Note: For a more robust implementation, we could save all pasteboard items,
-        // but saving the string is usually sufficient for text-heavy workflows.
+        // 2. Save previous clipboard contents (all types)
+        let savedContents = savePasteboardContents(pasteboard)
         
         // 3. Set new text to clipboard
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         
-        // 4. Simulate Cmd+V
+        // 4. Verify clipboard content was set correctly
+        guard pasteboard.string(forType: .string) == text else {
+            logger.error("Clipboard content not set correctly - aborting paste")
+            restorePasteboardContents(savedContents, to: pasteboard)
+            return false
+        }
+        
+        // 5. Wait for clipboard to stabilize (50ms)
+        Thread.sleep(forTimeInterval: 0.05)
+        
+        // 6. Simulate Cmd+V
         simulatePaste()
         
-        // 5. Restore clipboard after delay
-        // 150ms is generally sufficient for modern macOS apps to handle the paste event
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            // Only restore if the clipboard still contains our inserted text
-            // (avoids overwriting if user copied something else in the split second)
-            guard let self = self else { return }
-            
-            if let current = pasteboard.string(forType: .string), current == text {
-                if let previous = previousString {
-                    pasteboard.clearContents()
-                    pasteboard.setString(previous, forType: .string)
-                    self.logger.debug("Clipboard restored")
-                } else {
-                    // If previous was empty or non-string, just clear
-                    pasteboard.clearContents()
-                    self.logger.debug("Clipboard cleared (restored to empty)")
-                }
-            }
+        // 7. Wait synchronously for paste to complete (150ms)
+        Thread.sleep(forTimeInterval: 0.15)
+        
+        // 8. Restore clipboard if it still contains our text
+        // (avoids overwriting if user copied something else)
+        if let current = pasteboard.string(forType: .string), current == text {
+            restorePasteboardContents(savedContents, to: pasteboard)
+            logger.debug("Clipboard restored")
         }
         
         return true
@@ -68,24 +111,93 @@ final class TextInsertionService {
     
     // MARK: - Private Helpers
     
-    /// Simulates pressing Cmd+V to paste.
-    private func simulatePaste() {
-        let source = CGEventSource(stateID: .hidSystemState)
+    /// Saves all pasteboard contents for later restoration.
+    ///
+    /// Captures all types and data from all pasteboard items to ensure
+    /// non-text content (images, URLs, files) is preserved.
+    private func savePasteboardContents(_ pasteboard: NSPasteboard) -> SavedPasteboardContents {
+        var items: [[NSPasteboard.PasteboardType: Data]] = []
         
-        // Key down: Cmd + V
+        for item in pasteboard.pasteboardItems ?? [] {
+            var itemData: [NSPasteboard.PasteboardType: Data] = [:]
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    itemData[type] = data
+                }
+            }
+            if !itemData.isEmpty {
+                items.append(itemData)
+            }
+        }
+        
+        return SavedPasteboardContents(items: items)
+    }
+    
+    /// Restores previously saved pasteboard contents.
+    ///
+    /// Writes back all saved types and data to preserve the user's
+    /// original clipboard content.
+    private func restorePasteboardContents(_ saved: SavedPasteboardContents, to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        
+        if saved.items.isEmpty {
+            // Original clipboard was empty
+            logger.debug("Clipboard cleared (restored to empty)")
+            return
+        }
+        
+        // Create pasteboard items for each saved item
+        var pasteboardItems: [NSPasteboardItem] = []
+        for itemData in saved.items {
+            let item = NSPasteboardItem()
+            for (type, data) in itemData {
+                item.setData(data, forType: type)
+            }
+            pasteboardItems.append(item)
+        }
+        
+        pasteboard.writeObjects(pasteboardItems)
+    }
+    
+    /// Simulates pressing Cmd+V to paste with explicit key events.
+    ///
+    /// Uses `.combinedSessionState` for proper event coordination and
+    /// posts 4 explicit events (Cmd down, V down, V up, Cmd up) for
+    /// maximum app compatibility.
+    private func simulatePaste() {
+        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+            logger.error("Failed to create event source")
+            return
+        }
+        
+        // Configure event source to suppress user keyboard input during paste
+        // This prevents user typing from interfering with the paste operation
+        // Mouse and system events (volume, brightness) are still permitted
+        source.setLocalEventsFilterDuringSuppressionState(
+            [.permitLocalMouseEvents, .permitSystemDefinedEvents],
+            state: .eventSuppressionStateSuppressionInterval
+        )
+        
+        let cmdKeyCode = CGKeyCode(kVK_Command)
         let vKeyCode = CGKeyCode(kVK_ANSI_V)
         
-        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false) else {
+        // Create all 4 events for explicit Command+V sequence
+        guard let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: cmdKeyCode, keyDown: true),
+              let vDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true),
+              let vUp = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false),
+              let cmdUp = CGEvent(keyboardEventSource: source, virtualKey: cmdKeyCode, keyDown: false) else {
             logger.error("Failed to create paste events")
             return
         }
         
-        keyDown.flags = .maskCommand
-        keyUp.flags = .maskCommand
+        // Set Command flag on V events for apps that check flags
+        vDown.flags = .maskCommand
+        vUp.flags = .maskCommand
         
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        // Post events in sequence: Cmd↓ → V↓ → V↑ → Cmd↑
+        cmdDown.post(tap: .cghidEventTap)
+        vDown.post(tap: .cghidEventTap)
+        vUp.post(tap: .cghidEventTap)
+        cmdUp.post(tap: .cghidEventTap)
     }
 }
-
