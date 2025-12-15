@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Combine
+import os.log
 
 /// Manages system permissions required by Open Dictation.
 ///
@@ -13,6 +14,7 @@ import Combine
 /// - Defer microphone prompt until user actually tries to record
 /// - Listen for permission changes via notification instead of polling
 /// - Show alert with choice for denied permissions (don't auto-open Settings)
+/// - Reset stale TCC entries before requesting (Loop pattern for ad-hoc signed apps)
 @MainActor
 final class PermissionsManager: ObservableObject {
     
@@ -32,6 +34,7 @@ final class PermissionsManager: ObservableObject {
     
     // MARK: - Private Properties
     
+    private let logger = Logger.app(category: "PermissionsManager")
     private var accessibilityObserver: Task<Void, Never>?
     
     // MARK: - Initialization
@@ -83,6 +86,7 @@ final class PermissionsManager: ObservableObject {
     ///
     /// This method follows the pattern from Touch Bar Simulator by Sindre Sorhus:
     /// - Returns immediately if permission already granted
+    /// - Resets stale TCC entries (Loop pattern for ad-hoc signed apps)
     /// - Opens System Settings to Accessibility pane
     /// - Shows custom alert explaining what's needed
     /// - Offers "Continue" or "Quit" buttons
@@ -100,6 +104,15 @@ final class PermissionsManager: ObservableObject {
             isAccessibilityGranted = true
             return
         }
+        
+        // Reset any stale TCC entries before requesting permission.
+        // This is critical for ad-hoc signed apps: after an update, the app's code signature
+        // changes, but the old TCC entry remains. The user sees "Open Dictation" checked in
+        // System Settings, but AXIsProcessTrusted() returns false because the signature
+        // doesn't match. Resetting clears this stale state.
+        // Pattern from Loop (github.com/MrKai77/Loop).
+        logger.info("Accessibility not granted - resetting TCC to clear any stale entries")
+        resetAccessibility()
         
         // Open System Settings to Accessibility pane
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
@@ -163,6 +176,7 @@ final class PermissionsManager: ObservableObject {
     ///
     /// Pattern from iTerm2: Only show the system prompt once per app version.
     /// If already prompted this version, opens System Settings directly instead.
+    /// Also resets stale TCC entries (Loop pattern for ad-hoc signed apps).
     ///
     /// - Returns: `true` if permission is granted, `false` if denied or pending.
     @discardableResult
@@ -171,6 +185,11 @@ final class PermissionsManager: ObservableObject {
         if isAccessibilityGranted {
             return true
         }
+        
+        // Reset any stale TCC entries before requesting permission.
+        // Pattern from Loop - ensures the permission request will work even after app updates.
+        logger.info("Accessibility not granted - resetting TCC before request")
+        resetAccessibility()
         
         // Check if we've already prompted this version
         let currentVersion = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
@@ -259,6 +278,46 @@ final class PermissionsManager: ObservableObject {
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
                 NSWorkspace.shared.open(url)
             }
+        }
+    }
+    
+    /// Resets accessibility permissions for this app's bundle ID.
+    ///
+    /// This is critical for ad-hoc signed apps (like Open Dictation distributed via GitHub).
+    /// When the app is updated, the code signature changes, but macOS TCC database may still
+    /// have the old entry. This creates a "stale" permission where:
+    /// - System Settings shows the app as having permission (based on bundle ID)
+    /// - But `AXIsProcessTrusted()` returns false (code signature doesn't match)
+    ///
+    /// Running `tccutil reset Accessibility <bundle-id>` clears all entries for this bundle ID,
+    /// allowing the user to grant fresh permission that matches the current code signature.
+    ///
+    /// Pattern from Loop (github.com/MrKai77/Loop) - the leading open-source window manager.
+    private nonisolated func resetAccessibility() {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return }
+        
+        let tccutilPath = "/usr/bin/tccutil"
+        let arguments = ["reset", "Accessibility", bundleID]
+        
+        do {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: tccutilPath)
+            process.arguments = arguments
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            
+            // Log result (can't use logger from nonisolated context, use OSLog.app() directly)
+            let log = OSLog.app(category: "PermissionsManager")
+            if process.terminationStatus == 0 {
+                os_log("Reset accessibility permissions for %{public}@", log: log, type: .info, bundleID)
+            } else {
+                os_log("tccutil reset failed with status %d", log: log, type: .error, process.terminationStatus)
+            }
+        } catch {
+            let log = OSLog.app(category: "PermissionsManager")
+            os_log("Failed to run tccutil: %{public}@", log: log, type: .error, error.localizedDescription)
         }
     }
 }

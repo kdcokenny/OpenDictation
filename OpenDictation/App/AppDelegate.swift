@@ -8,7 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     // MARK: - Logger
     
-    private let logger = Logger(subsystem: "com.opendictation", category: "AppDelegate")
+    private let logger = Logger.app(category: "AppDelegate")
     
     // MARK: - Constants
     

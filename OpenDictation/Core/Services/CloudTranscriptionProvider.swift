@@ -51,7 +51,7 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
     
     // MARK: - Logger
     
-    private let logger = Logger(subsystem: "com.opendictation", category: "CloudTranscriptionProvider")
+    private let logger = Logger.app(category: "CloudTranscriptionProvider")
     
     private init() {}
     

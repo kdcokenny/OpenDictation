@@ -9,7 +9,7 @@ final class KeychainService: @unchecked Sendable {
   static let shared = KeychainService()
   
   private let service = "com.opendictation"
-  private let logger = Logger(subsystem: "com.opendictation", category: "Keychain")
+  private let logger = Logger.app(category: "Keychain")
   
   private init() {}
   

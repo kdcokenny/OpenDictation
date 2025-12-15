@@ -6,7 +6,7 @@ import os.log
 /// Adapted from VoiceInk/Services/TranscriptionOutputFilter.swift
 struct TranscriptionOutputFilter {
     
-    private static let logger = Logger(subsystem: "com.opendictation", category: "TranscriptionOutputFilter")
+    private static let logger = Logger.app(category: "TranscriptionOutputFilter")
     
     // MARK: - Patterns
     

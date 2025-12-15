@@ -16,7 +16,7 @@ actor WhisperContext {
     private var promptCString: [CChar]?
     private var vadModelPath: String?
     
-    private let logger = Logger(subsystem: "com.opendictation", category: "WhisperContext")
+    private let logger = Logger.app(category: "WhisperContext")
     
     // MARK: - Settings
     

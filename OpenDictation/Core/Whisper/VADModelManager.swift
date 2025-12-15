@@ -12,7 +12,7 @@ actor VADModelManager {
     
     // MARK: - Properties
     
-    private let logger = Logger(subsystem: "com.opendictation", category: "VADModelManager")
+    private let logger = Logger.app(category: "VADModelManager")
     
     /// Cached path to the VAD model
     private var cachedModelPath: String?

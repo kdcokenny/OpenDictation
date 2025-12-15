@@ -13,7 +13,7 @@ extension KeyboardShortcuts.Name {
 /// Manages global keyboard shortcuts using KeyboardShortcuts library.
 final class HotkeyService {
     
-    private let logger = Logger(subsystem: "com.opendictation", category: "HotkeyService")
+    private let logger = Logger.app(category: "HotkeyService")
     
     /// Called when the hotkey is pressed.
     var onHotkeyPressed: (() -> Void)?

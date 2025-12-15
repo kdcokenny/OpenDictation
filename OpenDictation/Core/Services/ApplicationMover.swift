@@ -6,7 +6,7 @@ import os.log
 /// Based on the VibeMeter pattern (MIT licensed).
 final class ApplicationMover {
     
-    private static let logger = Logger(subsystem: "com.opendictation", category: "ApplicationMover")
+    private static let logger = Logger.app(category: "ApplicationMover")
     
     // MARK: - Public API
     

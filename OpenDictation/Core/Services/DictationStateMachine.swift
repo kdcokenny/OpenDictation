@@ -41,7 +41,7 @@ final class DictationStateMachine: ObservableObject {
     
     // MARK: - Logger
     
-    private let logger = Logger(subsystem: "com.opendictation", category: "StateMachine")
+    private let logger = Logger.app(category: "StateMachine")
     
     // MARK: - Published State
     

@@ -11,7 +11,7 @@ actor TranscriptionCoordinator {
     
     // MARK: - Properties
     
-    private let logger = Logger(subsystem: "com.opendictation", category: "TranscriptionCoordinator")
+    private let logger = Logger.app(category: "TranscriptionCoordinator")
     
     /// The local transcription provider
     private let localProvider = LocalTranscriptionProvider.shared

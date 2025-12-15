@@ -21,7 +21,7 @@ final class AudioFeedbackService {
     
     // MARK: - Logger
     
-    private let logger = Logger(subsystem: "com.opendictation", category: "AudioFeedback")
+    private let logger = Logger.app(category: "AudioFeedback")
     
     // MARK: - Constants
     

@@ -38,7 +38,7 @@ final class ModelManager: ObservableObject {
     
     // MARK: - Properties
     
-    private let logger = Logger(subsystem: "com.opendictation", category: "ModelManager")
+    private let logger = Logger.app(category: "ModelManager")
     
     /// Directory where models are stored
     let modelsDirectory: URL

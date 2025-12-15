@@ -50,7 +50,9 @@ targets:
       - path: OpenDictation/App
         excludes:
           - Info.plist
-      - path: OpenDictation/Core
+      - path: OpenDictation/Core/Services
+      - path: OpenDictation/Core/Utilities
+      - path: OpenDictation/Core/Whisper
       - path: OpenDictation/Views
       - path: OpenDictation/Models
       - path: OpenDictation/Extensions

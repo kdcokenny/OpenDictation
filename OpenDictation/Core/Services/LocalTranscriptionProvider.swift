@@ -13,7 +13,7 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
     
     // MARK: - Properties
     
-    private let logger = Logger(subsystem: "com.opendictation", category: "LocalTranscriptionProvider")
+    private let logger = Logger.app(category: "LocalTranscriptionProvider")
     
     /// The currently loaded whisper context
     private var whisperContext: WhisperContext?

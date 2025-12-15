@@ -19,7 +19,7 @@ final class EscapeKeyMonitor {
     
     private var globalMonitor: Any?
     private var localMonitor: Any?
-    private let logger = Logger(subsystem: "com.opendictation", category: "EscapeKeyMonitor")
+    private let logger = Logger.app(category: "EscapeKeyMonitor")
     
     /// Whether monitoring is active
     private(set) var isMonitoring = false

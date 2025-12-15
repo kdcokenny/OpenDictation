@@ -33,7 +33,7 @@ final class RecordingService: NSObject, ObservableObject {
     
     // MARK: - Logger
     
-    private let logger = Logger(subsystem: "com.opendictation", category: "RecordingService")
+    private let logger = Logger.app(category: "RecordingService")
     
     // MARK: - Published Properties
     
