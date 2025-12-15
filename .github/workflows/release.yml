@@ -102,7 +102,7 @@ jobs:
       - name: Create DMG
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          DMG_NAME="OpenDictation-$VERSION.dmg"
+          DMG_NAME="OpenDictation.dmg"
           APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release/OpenDictation.app"
           
           create-dmg \
@@ -191,7 +191,7 @@ jobs:
           ET.SubElement(item, 'pubDate').text = pub_date
           ET.SubElement(item, '{http://www.andymatuschak.org/xml-namespaces/sparkle}version').text = build
           ET.SubElement(item, '{http://www.andymatuschak.org/xml-namespaces/sparkle}shortVersionString').text = version
-          ET.SubElement(item, '{http://www.andymatuschak.org/xml-namespaces/sparkle}minimumSystemVersion').text = '26.0'
+          ET.SubElement(item, '{http://www.andymatuschak.org/xml-namespaces/sparkle}minimumSystemVersion').text = '14.0'
           
           enclosure = ET.SubElement(item, 'enclosure')
           enclosure.set('url', f'https://github.com/kdcokenny/OpenDictation/releases/download/v{version}/{dmg_name}')

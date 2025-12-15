@@ -17,7 +17,7 @@ Open Dictation is a native macOS application that decouples Apple's built-in dic
 - **Audio:** AVFoundation with Voice Activity Detection (VAD)
 - **System Integration:** Accessibility API (`ApplicationServices`, `AXUIElement`)
 - **Build:** Xcode 15.0+
-- **Target:** macOS 13.0 (Ventura) or later
+- **Target:** macOS 14.0 (Sonoma) or later
 
 ## Project Conventions
 
@@ -68,7 +68,7 @@ Open Dictation is a native macOS application that decouples Apple's built-in dic
 
 ## Important Constraints
 - Requires **Accessibility** permissions to function (system prompt on first launch)
-- macOS 13.0+ only (uses modern SwiftUI and system APIs)
+- macOS 14.0+ only (uses modern SwiftUI and Swift concurrency APIs)
 - Must never steal focus from the active application
 - Must preserve clipboard history and undo stacks (no clipboard injection)
 - Audio capture must be low-latency for good UX

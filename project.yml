@@ -2,7 +2,7 @@ name: OpenDictation
 options:
   bundleIdPrefix: com.opendictation
   deploymentTarget:
-    macOS: "26.0"
+    macOS: "14.0"
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
   groupSortPosition: top
@@ -25,7 +25,7 @@ settings:
     CODE_SIGNING_ALLOWED: NO
     ENABLE_HARDENED_RUNTIME: NO
     SWIFT_VERSION: "6.0"
-    SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk
+    SDKROOT: macosx
     ARCHS: arm64
 
 packages:

@@ -5,7 +5,7 @@
   <p>
     <a href="https://github.com/kdcokenny/OpenDictation/releases/latest"><img src="https://img.shields.io/badge/download-latest-brightgreen?style=for-the-badge" alt="Download"></a>
     <img src="https://img.shields.io/badge/platform-macOS-blue?style=for-the-badge" alt="Platform">
-    <img src="https://img.shields.io/badge/requirements-macOS%2026%2B-fa4e49?style=for-the-badge" alt="Requirements">
+    <img src="https://img.shields.io/badge/requirements-macOS%2014%2B-fa4e49?style=for-the-badge" alt="Requirements">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge" alt="License"></a>
   </p>
 
@@ -19,7 +19,7 @@
 
 ### Requirements
 
-- macOS 26 (Tahoe) or later
+- macOS 14 (Sonoma) or later
 - Apple Silicon Mac (M1 or later)
 - **MacBook with notch** for visual UI (2021 MacBook Pro, 2022+ MacBook Air)
 
@@ -38,17 +38,15 @@ Download the DMG, open it, and drag Open Dictation to your Applications folder.
 
 ### First Launch
 
-Since Open Dictation is distributed outside the Mac App Store, macOS will block it on first launch.
+Since Open Dictation is distributed outside the Mac App Store, macOS may show a warning or say the app is "damaged."
 
-**To open the app:**
+**To fix this**, run this command in Terminal:
 
-1. Double-click Open Dictation to launch it (macOS will block it)
-2. Open **System Settings → Privacy & Security**
-3. Scroll down to the Security section
-4. Click **"Open Anyway"** next to the message about Open Dictation being blocked
-5. Click **"Open"** in the confirmation dialog
+```bash
+xattr -rd com.apple.quarantine /Applications/OpenDictation.app
+```
 
-You only need to do this once. After that, the app opens normally.
+This removes the quarantine flag that macOS adds to downloaded apps. You only need to do this once.
 
 ### Homebrew
 
