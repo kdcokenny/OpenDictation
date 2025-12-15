@@ -618,10 +618,13 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
     // Note: These are nonisolated to satisfy protocol requirements, but they're called on main queue
     // (via delegateQueue: .main) so we use MainActor.assumeIsolated for safe access to our properties.
     
-    nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didWriteData bytesWritten: Int64,
-                    totalBytesWritten: Int64,
-                    totalBytesExpectedToWrite: Int64) {
+    nonisolated func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
         
         guard totalBytesExpectedToWrite > 0 else { return }
         
@@ -636,8 +639,11 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
         }
     }
     
-    nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didFinishDownloadingTo location: URL) {
+    nonisolated func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
         
         // Move to a safe location before the delegate method returns
         // (Apple deletes the temp file after this method returns)
@@ -660,8 +666,11 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
         }
     }
     
-    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask,
-                    didCompleteWithError error: Error?) {
+    nonisolated func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
         
         MainActor.assumeIsolated {
             if let error = error {

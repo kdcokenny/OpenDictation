@@ -55,17 +55,9 @@ This removes the quarantine flag that macOS adds to downloaded apps. You only ne
 # brew install --cask open-dictation
 ```
 
-### Build from Source
+### Development
 
-```bash
-git clone https://github.com/kdcokenny/OpenDictation.git
-cd OpenDictation
-make setup  # Downloads models and builds whisper.cpp
-make build  # Builds the app
-make run    # Run the app
-```
-
-See `make help` for all available targets.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, editor setup, and contribution guidelines.
 
 ---
 

@@ -137,13 +137,11 @@ final class ApplicationMover {
             (home + "/Desktop/", "Desktop"),
             (home + "/Documents/", "Documents"),
             ("/private/var/folders/", "temporary folder"),
-            ("/tmp/", "temporary folder"),
+            ("/tmp/", "temporary folder")
         ]
         
-        for (path, name) in tempLocations {
-            if bundlePath.hasPrefix(path) {
-                return name
-            }
+        for (path, name) in tempLocations where bundlePath.hasPrefix(path) {
+            return name
         }
         
         return nil

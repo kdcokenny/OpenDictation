@@ -167,7 +167,9 @@ struct SettingsView: View {
                             .textFieldStyle(.roundedBorder)
                     }
                     
-                    Button(action: { isApiKeyVisible.toggle() }) {
+                    Button {
+                        isApiKeyVisible.toggle()
+                    } label: {
                         Image(systemName: isApiKeyVisible ? "eye.slash" : "eye")
                             .foregroundColor(.secondary)
                     }

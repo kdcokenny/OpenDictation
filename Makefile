@@ -11,7 +11,7 @@ MODELS_DIR := OpenDictation/Resources/Models
 TINY_URL := https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
 SILERO_VAD_URL := https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
 
-.PHONY: all clean whisper models setup build check help dev reset release dmg run-release run
+.PHONY: all clean whisper models setup build check help dev reset release dmg run-release run lint lint-fix lsp
 
 # Default target
 all: check setup build
@@ -71,27 +71,47 @@ setup: whisper models
 	@echo ""
 	@echo "Next: run 'make build' to build the app"
 
+# Setup LSP support for non-Xcode editors (VSCode, Cursor, Neovim, etc.)
+lsp:
+	@if command -v xcode-build-server >/dev/null 2>&1; then \
+		echo "Generating LSP configuration..."; \
+		xcode-build-server config -project OpenDictation.xcodeproj -scheme OpenDictation; \
+		echo "buildServer.json created. Restart your editor/LSP to apply."; \
+	else \
+		echo "xcode-build-server not installed."; \
+		echo "Install with: brew install xcode-build-server"; \
+		exit 1; \
+	fi
+
 # Build the app (debug)
 build:
+	@if [ ! -f buildServer.json ] && command -v xcode-build-server >/dev/null 2>&1; then \
+		echo "buildServer.json not found, generating LSP configuration..."; \
+		$(MAKE) lsp; \
+	fi
 	@echo "Building OpenDictation Dev..."
 	@xcodebuild -project OpenDictation.xcodeproj \
 		-scheme OpenDictation \
 		-configuration "Debug (Dev)" \
-		-derivedDataPath build \
 		build
 	@echo ""
 	@echo "Debug build complete!"
-	@echo "App: build/Build/Products/Debug (Dev)/OpenDictation Dev.app"
 
 # Run the app (debug build)
 run:
 	@echo "Running OpenDictation Dev..."
-	@open "build/Build/Products/Debug (Dev)/OpenDictation Dev.app"
+	@APP_PATH=$$(xcodebuild -project OpenDictation.xcodeproj -scheme OpenDictation -configuration "Debug (Dev)" -showBuildSettings 2>/dev/null | grep -m1 'BUILT_PRODUCTS_DIR' | sed 's/.*= //'); \
+	open "$$APP_PATH/OpenDictation Dev.app"
 
 # Clean build artifacts
 clean:
 	@echo "Cleaning..."
 	@rm -rf build
+	@DERIVED_DATA=$$(xcodebuild -project OpenDictation.xcodeproj -scheme OpenDictation -showBuildSettings 2>/dev/null | grep -m1 'BUILD_DIR' | sed 's/.*= //' | sed 's|/Build/Products||'); \
+	if [ -n "$$DERIVED_DATA" ] && [ -d "$$DERIVED_DATA" ]; then \
+		echo "Cleaning DerivedData: $$DERIVED_DATA"; \
+		rm -rf "$$DERIVED_DATA"; \
+	fi
 	@echo "Clean complete"
 
 # Deep clean (removes deps and build)
@@ -115,19 +135,18 @@ release:
 	@xcodebuild -project OpenDictation.xcodeproj \
 		-scheme OpenDictation \
 		-configuration Release \
-		-derivedDataPath build \
 		build
 	@echo ""
 	@echo "Release build complete!"
-	@echo "App: build/Build/Products/Release/OpenDictation.app"
 
 # Create styled DMG from release build
 dmg: release
 	@echo "Creating styled DMG..."
 	@command -v create-dmg >/dev/null 2>&1 || { echo "Installing create-dmg..."; brew install create-dmg; }
-	@codesign --deep --force -s - build/Build/Products/Release/OpenDictation.app
-	@rm -f ~/Downloads/OpenDictation-local.dmg
-	@create-dmg \
+	@APP_PATH=$$(xcodebuild -project OpenDictation.xcodeproj -scheme OpenDictation -configuration Release -showBuildSettings 2>/dev/null | grep -m1 'BUILT_PRODUCTS_DIR' | sed 's/.*= //'); \
+	codesign --deep --force -s - "$$APP_PATH/OpenDictation.app"; \
+	rm -f ~/Downloads/OpenDictation-local.dmg; \
+	create-dmg \
 		--volname "Open Dictation" \
 		--volicon "OpenDictation/Resources/DMG/VolumeIcon.icns" \
 		--background "OpenDictation/Resources/DMG/background.tiff" \
@@ -138,13 +157,32 @@ dmg: release
 		--hide-extension "OpenDictation.app" \
 		--app-drop-link 350 200 \
 		~/Downloads/OpenDictation-local.dmg \
-		build/Build/Products/Release/OpenDictation.app
+		"$$APP_PATH/OpenDictation.app"
 	@echo ""
 	@echo "DMG created: ~/Downloads/OpenDictation-local.dmg"
 
 # Run the release build
 run-release: release
-	@open build/Build/Products/Release/OpenDictation.app
+	@APP_PATH=$$(xcodebuild -project OpenDictation.xcodeproj -scheme OpenDictation -configuration Release -showBuildSettings 2>/dev/null | grep -m1 'BUILT_PRODUCTS_DIR' | sed 's/.*= //'); \
+	open "$$APP_PATH/OpenDictation.app"
+
+# Lint Swift code with SwiftLint
+lint:
+	@if which swiftlint >/dev/null; then \
+		swiftlint; \
+	else \
+		echo "SwiftLint not installed. Run: brew install swiftlint"; \
+		exit 1; \
+	fi
+
+# Auto-fix lint violations where possible
+lint-fix:
+	@if which swiftlint >/dev/null; then \
+		swiftlint --fix && swiftlint; \
+	else \
+		echo "SwiftLint not installed. Run: brew install swiftlint"; \
+		exit 1; \
+	fi
 
 # Help
 help:
@@ -165,12 +203,20 @@ help:
 	@echo "  release     Build release version"
 	@echo "  dmg         Create DMG from release build"
 	@echo "  run-release Run the release build"
+	@echo "  lint        Run SwiftLint on all Swift files"
+	@echo "  lint-fix    Auto-fix SwiftLint violations"
+	@echo "  lsp         Setup LSP for non-Xcode editors (VSCode, Neovim, etc.)"
 	@echo "  help        Show this help message"
 	@echo ""
 	@echo "Quick start (development):"
 	@echo "  make setup    # First time: build framework + download models"
 	@echo "  make build    # Build the app (debug)"
 	@echo "  make run      # Run the app"
+	@echo ""
+	@echo "Non-Xcode editors (VSCode, Cursor, Neovim):"
+	@echo "  brew install xcode-build-server"
+	@echo "  make lsp      # Generate LSP configuration"
+	@echo "  make build    # Build once to populate indexes"
 	@echo ""
 	@echo "Release testing:"
 	@echo "  make release     # Build release version"

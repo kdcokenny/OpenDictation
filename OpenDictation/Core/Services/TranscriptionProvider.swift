@@ -11,8 +11,8 @@ protocol TranscriptionProvider {
 
 /// Transcription mode selection.
 enum TranscriptionMode: String, Codable, CaseIterable {
-    case local = "local"
-    case cloud = "cloud"
+    case local
+    case cloud
     
     var displayName: String {
         switch self {

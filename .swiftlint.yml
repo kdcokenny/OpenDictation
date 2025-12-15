@@ -1,0 +1,38 @@
+# SwiftLint Configuration
+# Based on Stats (35k stars) and Ice (25k stars) patterns
+# Focus: catch bugs, not enforce strict style
+
+included:
+  - OpenDictation
+
+excluded:
+  - Frameworks
+  - deps
+  - build
+
+# Disabled rules (following Stats/Ice patterns - too strict for real-world code)
+disabled_rules:
+  - line_length              # Stats disables
+  - function_body_length     # Stats disables
+  - trailing_whitespace      # Stats disables
+  - opening_brace            # Stats disables
+  - cyclomatic_complexity    # Stats disables
+  - force_cast               # Stats disables (common in AppKit code)
+  - identifier_name          # Ice disables
+  - todo                     # Ice disables - allow TODO comments
+  - large_tuple              # Stats disables
+  - nesting                  # Ice disables
+  - type_body_length         # Can be large for ViewModels
+  - file_length              # Ice disables
+  - function_parameter_count # Ice disables
+  - generic_type_name        # Ice disables
+
+# Opt-in rules for catching actual bugs
+opt_in_rules:
+  - empty_count              # Both Stats and Ice enable
+  - trailing_newline         # Stats enables
+  - colon                    # Stats enables
+  - comma                    # Stats enables
+  - closure_spacing          # Ice enables
+
+

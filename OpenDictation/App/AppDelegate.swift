@@ -267,7 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 panel.showSuccessAndDismiss()
             case .copiedToClipboard:
                 panel.showClipboardAndDismiss()
-            case .error(_):
+            case .error:
                 panel.showErrorAndDismiss()
             case .empty:
                 panel.showEmptyAndDismiss()
@@ -388,7 +388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 case .copiedToClipboard:
                     self?.playFeedbackAndRestoreVolume { $0.playSuccessSound() }
                     self?.notchPanel?.setVisualState(.copiedToClipboard)
-                case .error(_):
+                case .error:
                     self?.playFeedbackAndRestoreVolume { $0.playErrorSound() }
                     self?.notchPanel?.setVisualState(.error)
                 case .empty:

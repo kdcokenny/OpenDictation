@@ -81,9 +81,9 @@ enum PredefinedModels {
     
     /// Model tiers for capability-based selection
     enum ModelTier: String {
-        case tiny = "tiny"
-        case base = "base"
-        case large = "large"
+        case tiny
+        case base
+        case large
     }
     
     /// Returns the recommended model for a language and hardware tier.
