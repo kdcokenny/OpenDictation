@@ -33,17 +33,16 @@ final class NotchOverlayPanel {
     private let viewModel = NotchViewModel()
     private let screen: NSScreen
     
-    /// Event monitor for Escape key.
-    private var escapeMonitor: EventMonitor?
-    
-    /// Callback when escape key is pressed.
-    var onEscapePressed: (() -> Void)?
-    
     /// Callback when dismiss animation completes.
     var onDismissCompleted: (() -> Void)?
     
     /// Flag to prevent multiple dismiss calls.
     private var isDismissing = false
+    
+    /// Whether the panel window is currently visible.
+    var isVisible: Bool {
+        return window?.isVisible == true
+    }
     
     // MARK: - Initialization
     
@@ -66,9 +65,6 @@ final class NotchOverlayPanel {
         if window == nil {
             createWindow()
         }
-        
-        // Start escape monitors
-        startEscapeMonitors()
         
         // Show window (collapsed initially) - use orderFrontRegardless to avoid focus stealing
         window?.orderFrontRegardless()
@@ -95,7 +91,6 @@ final class NotchOverlayPanel {
         guard !isDismissing else { return }
         isDismissing = true
         
-        stopEscapeMonitors()
         viewModel.collapse()
         
         // Wait for animation to complete before hiding window
@@ -142,6 +137,21 @@ final class NotchOverlayPanel {
         }
     }
     
+    /// Destroys the panel synchronously for clean shutdown during screen changes.
+    /// This ensures no async callbacks fire after the panel reference is cleared.
+    func destroy() {
+        // Clear callbacks to prevent dangling references
+        onDismissCompleted = nil
+        
+        // Immediate window close (no animation)
+        window?.orderOut(nil)
+        window?.close()
+        window = nil
+        hostingView = nil
+        
+        isDismissing = false
+    }
+    
     // MARK: - Private Methods
     
     /// Creates the NotchWindow and sets up the SwiftUI content.
@@ -159,132 +169,5 @@ final class NotchOverlayPanel {
         
         self.window = notchWindow
         self.hostingView = hosting
-    }
-    
-    /// Start monitoring for Escape key globally and locally.
-    private func startEscapeMonitors() {
-        // Ensure clean state
-        stopEscapeMonitors()
-        
-        escapeMonitor = EventMonitor(
-            mask: NSEvent.EventTypeMask.keyDown,
-            handler: { [weak self] (event: NSEvent) in
-                // Check for Escape key (53) and if window is visible
-                let isEscape = event.keyCode == 53
-                if isEscape && self?.window?.isVisible == true {
-                    DispatchQueue.main.async {
-                        self?.onEscapePressed?()
-                    }
-                }
-            },
-            shouldConsume: { [weak self] event in
-                // Consume escape key when panel is visible
-                return event.keyCode == 53 && self?.window?.isVisible == true
-            }
-        )
-        escapeMonitor?.start()
-    }
-    
-    /// Stop monitoring for Escape key.
-    private func stopEscapeMonitors() {
-        escapeMonitor?.stop()
-        escapeMonitor = nil
-    }
-}
-
-/// C-function callback for the event tap
-private func eventTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refCon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
-    guard let refCon = refCon else { return Unmanaged.passUnretained(event) }
-    
-    let monitor = Unmanaged<EventMonitor>.fromOpaque(refCon).takeUnretainedValue()
-    
-    // Check if we should consume
-    if monitor.shouldConsume?(NSEvent(cgEvent: event)!) == true {
-        // Also trigger handler before consuming
-        monitor.handler(NSEvent(cgEvent: event)!)
-        return nil
-    }
-    
-    // Always trigger handler for monitoring purposes if not consumed above?
-    // The previous implementation both handled AND potentially consumed.
-    // Let's stick to the pattern:
-    // If consumed, we return nil (and still trigger handler implicitly inside the check or explicitly).
-    // The original logic was: call handler, then check consumption.
-    
-    monitor.handler(NSEvent(cgEvent: event)!)
-    return Unmanaged.passUnretained(event)
-}
-
-/// Monitors keyboard/mouse events via CGEventTap to allow global consumption.
-final class EventMonitor {
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
-    private let mask: NSEvent.EventTypeMask
-    
-    // Internal access for callback
-    let handler: (NSEvent) -> Void
-    let shouldConsume: ((NSEvent) -> Bool)?
-
-    init(
-        mask: NSEvent.EventTypeMask,
-        handler: @escaping (NSEvent) -> Void,
-        shouldConsume: ((NSEvent) -> Bool)? = nil
-    ) {
-        self.mask = mask
-        self.handler = handler
-        self.shouldConsume = shouldConsume
-    }
-
-    deinit {
-        stop()
-    }
-
-    func start() {
-        stop()
-        
-        // Convert NSEventMask to CGEventMask (approximate for keyDown)
-        // For now hardcoded to .keyDown (1 << 10) as that's what we use.
-        // CGEventMask is bitfield. kCGEventKeyDown = 10.
-        let eventMask = (1 << CGEventType.keyDown.rawValue)
-        
-        // Create the tap
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: CGEventMask(eventMask),
-            callback: eventTapCallback,
-            userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        ) else {
-            // This should never happen if accessibility was checked on launch
-            let logger = Logger(subsystem: "com.opendictation", category: "EventMonitor")
-            logger.error("Failed to create event tap - accessibility permission required. Escape key will not work.")
-            return
-        }
-        
-        self.eventTap = tap
-        
-        // Create run loop source
-        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
-            print("Failed to create run loop source")
-            return
-        }
-        
-        self.runLoopSource = source
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-    }
-
-    func stop() {
-        if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
-            runLoopSource = nil
-        }
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-            // CFMachPortInvalidate(tap) // Not strictly necessary for CFMachPort but good practice? 
-            // ARC handles the release of the object.
-            eventTap = nil
-        }
     }
 }

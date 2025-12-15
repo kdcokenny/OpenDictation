@@ -1,13 +1,14 @@
 import AppKit
 
 /// A borderless panel configured to overlay the notch area.
-/// Uses Apple's system UI pattern for passive overlays (volume HUD, Spotlight).
+/// Uses production-proven pattern from DynamicNotchKit, KeyboardCowboy, and other overlay apps.
 ///
 /// Configuration:
-/// - `.statusBar + 8` level to float above menu bar
+/// - `.screenSaver` level (1000) for guaranteed visibility over fullscreen apps
 /// - Borderless with full-size content for custom drawing
 /// - Works on all Spaces, doesn't appear in window cycling
 /// - Does not steal focus from active application
+/// - `becomesKeyOnlyIfNeeded = true` prevents system window demotion
 final class NotchWindow: NSPanel {
     
     // MARK: - Constants
@@ -33,7 +34,7 @@ final class NotchWindow: NSPanel {
         
         super.init(
             contentRect: windowFrame,
-            styleMask: [.borderless, .fullSizeContentView, .nonactivatingPanel, .utilityWindow],
+            styleMask: [.borderless, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -55,8 +56,15 @@ final class NotchWindow: NSPanel {
         // Floating panel behavior (Apple system UI pattern)
         isFloatingPanel = true
         
-        // Window level - float above menu bar (NotchDrop pattern)
-        level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 8)
+        // Prevent system from demoting window priority after system events.
+        // Combined with canBecomeKey = false, this maintains passive behavior
+        // while ensuring reliable visibility. Pattern from KeyboardCowboy.
+        becomesKeyOnlyIfNeeded = true
+        
+        // Window level - .screenSaver (1000) for guaranteed visibility over fullscreen apps.
+        // This is the Apple-blessed pattern used by DynamicNotchKit, KeyboardCowboy,
+        // and other production overlay apps for reliable fullscreen compatibility.
+        level = .screenSaver
         
         // Transparent background for custom content
         backgroundColor = .clear

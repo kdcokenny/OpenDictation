@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         setupStatusItem()
         setupServices()
+        setupEscapeKeyMonitor()
         setupStateMachine()
         setupLocalTranscription()
         
@@ -173,6 +174,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // - Accessibility: prompted once per version when hotkey is first pressed
             // - Microphone: prompted when user first tries to record
         }
+    }
+    
+    /// Sets up the singleton escape key monitor.
+    /// This monitor lives for the entire app lifetime and is separate from panel lifecycle.
+    /// Pattern from NotchDrop's EventMonitors singleton.
+    private func setupEscapeKeyMonitor() {
+        let monitor = EscapeKeyMonitor.shared
+        
+        // Wire escape key to state machine
+        monitor.onEscapePressed = { [weak self] in
+            self?.stateMachine?.send(.escapePressed)
+        }
+        
+        // Only handle escape when panel is visible
+        monitor.shouldHandleEscape = { [weak self] in
+            return self?.notchPanel?.isVisible == true
+        }
+        
+        // Start monitoring (lives for app lifetime)
+        monitor.start()
     }
     
     /// Sets up local transcription on first launch.
@@ -433,12 +454,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     /// Wires up notch panel callbacks to the state machine.
     /// Extracted to a method so it can be re-called after panel recreation during screen changes.
+    /// Note: Escape key is handled by EscapeKeyMonitor singleton, not panel callbacks.
     private func wireNotchPanelCallbacks() {
         guard let sm = stateMachine else { return }
-        
-        notchPanel?.onEscapePressed = { [weak sm] in
-            sm?.send(.escapePressed)
-        }
         
         notchPanel?.onDismissCompleted = { [weak sm] in
             sm?.send(.dismissCompleted)
@@ -451,16 +469,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     ///
     /// This method follows the stateless "destroy and recreate" pattern from NotchDrop.
     /// It's called on app launch and any time screen parameters change.
+    ///
+    /// Display changes are treated as system-level interruptions (not user cancellations),
+    /// so we perform immediate cleanup and force state reset.
     @objc private func rebuildNotchUI() {
-        // 1. Cancel any active session to ensure a clean state
+        // 1. Handle active sessions (display change interrupts recording/processing)
         if stateMachine?.state != .idle {
-            logger.info("Screen change detected during active session, cancelling...")
-            stateMachine?.send(.escapePressed)
+            logger.info("Screen change interrupted active session - performing emergency cleanup")
+            
+            // Cancel any in-progress transcription
+            transcriptionTask?.cancel()
+            transcriptionTask = nil
+            
+            // Stop recording if active
+            recordingService?.stopRecording()
+            recordingService?.deleteRecording()
+            
+            // Restore audio volume
+            audioFeedbackService?.restoreVolume()
+            
+            // Play error sound for user feedback (something unexpected happened)
+            audioFeedbackService?.playErrorSound()
+            
+            // Destroy panel immediately (no animation needed for system events)
+            notchPanel?.destroy()
+            notchPanel = nil
+            
+            // Force state machine back to idle via emergency reset
+            // This bypasses normal state transitions since display changes are system-level interruptions
+            stateMachine?.send(.forceReset)
+        } else {
+            // 2. Normal rebuild (no active session)
+            notchPanel?.destroy()
+            notchPanel = nil
         }
-        
-        // 2. Destroy the existing panel completely
-        notchPanel?.hide()
-        notchPanel = nil
         
         // 3. Find the correct screen and recreate the panel
         if let screen = NSScreen.findScreenForNotch() {

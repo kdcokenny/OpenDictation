@@ -23,6 +23,7 @@ enum DictationEvent {
     case transcriptionFailed(error: String)
     case escapePressed
     case dismissCompleted
+    case forceReset  // System-level interruption (display changes, sleep, etc.) - bypasses normal flow
 }
 
 /// Manages dictation state transitions with observable state for UI binding.
@@ -35,6 +36,7 @@ enum DictationEvent {
 /// - `processing` → `success`/`error`/`empty` (transcription result)
 /// - `processing` → `cancelled` (escape)
 /// - `success`/`error`/`empty`/`cancelled` → `idle` (dismiss completed)
+/// - `*` → `idle` (force reset - for system interruptions)
 final class DictationStateMachine: ObservableObject {
     
     // MARK: - Logger
@@ -140,6 +142,17 @@ final class DictationStateMachine: ObservableObject {
                 isMockMode = false
                 logger.debug("Mock mode auto-disabled")
             }
+            
+        // MARK: Force Reset (System Interruptions)
+        case (_, .forceReset):
+            // Emergency reset from ANY state (display changes, system sleep, etc.)
+            // Bypasses normal state flow and callbacks
+            state = .idle
+            if isMockMode {
+                isMockMode = false
+                logger.debug("Mock mode auto-disabled via force reset")
+            }
+            logger.info("State machine force reset from \(String(describing: previousState))")
             
         // MARK: Invalid Transitions (Ignored)
         default:
