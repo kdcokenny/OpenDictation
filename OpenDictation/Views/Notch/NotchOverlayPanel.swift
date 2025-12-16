@@ -44,6 +44,12 @@ final class NotchOverlayPanel {
         return window?.isVisible == true
     }
     
+    /// Whether the panel is in a healthy state (window exists and is valid).
+    /// Used for defensive recovery when the window may have become stale.
+    var isHealthy: Bool {
+        return window != nil
+    }
+    
     // MARK: - Initialization
     
     /// Creates a notch overlay panel for the given screen.

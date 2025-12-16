@@ -242,14 +242,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         // Wire up state machine callbacks
         sm.onShowPanel = { [weak self] in
+            guard let self = self else { return }
+            
+            // Defensive rebuild if panel is missing or unhealthy (volumeHUD pattern)
+            // This recovers from edge cases where the panel becomes stale after sleep/wake
+            if self.notchPanel == nil || self.notchPanel?.isHealthy == false {
+                self.logger.warning("notchPanel needs rebuild (nil=\(self.notchPanel == nil), healthy=\(self.notchPanel?.isHealthy ?? false)) - recreating")
+                self.notchPanel?.destroy()
+                self.notchPanel = nil
+                
+                if let screen = NSScreen.findScreenForNotch() {
+                    self.notchPanel = NotchOverlayPanel(screen: screen)
+                    self.wireNotchPanelCallbacks()
+                }
+            }
+            
+            // Fatal: notch screen exists but panel creation failed - unrecoverable
+            // Show error dialog and relaunch the app
+            if NSScreen.findScreenForNotch() != nil && self.notchPanel == nil {
+                self.showFatalErrorAndRelaunch()
+                return
+            }
+            
             // Duck other audio first, then play start sound
             // AudioDeviceDuck only affects OTHER audio, our sounds play at full volume
-            self?.audioFeedbackService?.duckVolume()
+            self.audioFeedbackService?.duckVolume()
             DispatchQueue.main.asyncAfter(deadline: .now() + Timing.volumeDuckRampDelay) {
-                self?.audioFeedbackService?.playStartSound()
+                self.audioFeedbackService?.playStartSound()
             }
-            // Only show panel if notch exists (non-notch Macs get audio feedback only)
-            self?.notchPanel?.show()
+            
+            // Show panel if available (non-notch Macs get audio feedback only)
+            self.notchPanel?.show()
         }
         
         sm.onHidePanel = { [weak self, weak sm] in
@@ -598,5 +621,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     @objc private func quitApp() {
         NSApp.terminate(nil)
+    }
+    
+    // MARK: - Error Recovery
+    
+    /// Relaunches the application after a fatal error.
+    /// Pattern from Karabiner-Elements Relauncher.swift
+    private func relaunchApp() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        
+        NSWorkspace.shared.openApplication(
+            at: Bundle.main.bundleURL,
+            configuration: configuration
+        ) { _, error in
+            if error == nil {
+                Task { @MainActor in
+                    NSApp.terminate(nil)
+                }
+            }
+        }
+    }
+    
+    /// Opens GitHub issue page with pre-populated bug report.
+    /// Pattern from DockDoor/Stats bug reporting.
+    private func openBugReport() {
+        let macOSVersion = ProcessInfo.processInfo.operatingSystemVersionString
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
+        
+        let body = """
+        ## Description
+        The notch panel failed to recover after automatic rebuild attempt.
+        
+        ## Environment
+        - macOS version: \(macOSVersion)
+        - App version: \(appVersion)
+        
+        ## Steps before issue occurred
+        1. 
+        
+        ## Additional context
+        
+        """
+        
+        let encodedBody = body.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let urlString = "https://github.com/kdcokenny/OpenDictation/issues/new?labels=bug&title=Bug%3A%20Notch%20panel%20failed%20to%20recover&body=\(encodedBody)"
+        
+        if let url = URL(string: urlString) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+    
+    /// Shows fatal error alert and relaunches the app.
+    /// Called when the notch panel fails to recover.
+    private func showFatalErrorAndRelaunch() {
+        logger.error("Fatal: Failed to create notch panel - showing recovery dialog")
+        
+        let alert = NSAlert()
+        alert.messageText = "Open Dictation Error"
+        alert.informativeText = "The app encountered an unrecoverable error and will restart automatically."
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Restart Now")
+        alert.addButton(withTitle: "Report Issue")
+        
+        let response = alert.runModal()
+        
+        if response == .alertSecondButtonReturn {
+            openBugReport()
+        }
+        
+        relaunchApp()
     }
 }
