@@ -247,7 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Defensive rebuild if panel is missing or unhealthy (volumeHUD pattern)
             // This recovers from edge cases where the panel becomes stale after sleep/wake
             if self.notchPanel == nil || self.notchPanel?.isHealthy == false {
-                self.logger.warning("notchPanel needs rebuild (nil=\(self.notchPanel == nil), healthy=\(self.notchPanel?.isHealthy ?? false)) - recreating")
+                self.logger.info("Panel needs rebuild - recreating")
                 self.notchPanel?.destroy()
                 self.notchPanel = nil
                 
@@ -260,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Fatal: notch screen exists but panel creation failed - unrecoverable
             // Show error dialog and relaunch the app
             if NSScreen.findScreenForNotch() != nil && self.notchPanel == nil {
+                self.logger.error("Fatal: notch screen exists but panel is nil - triggering relaunch")
                 self.showFatalErrorAndRelaunch()
                 return
             }

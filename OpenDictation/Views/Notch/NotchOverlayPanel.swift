@@ -28,6 +28,7 @@ final class NotchOverlayPanel {
     
     // MARK: - Properties
     
+    private let logger = Logger.app(category: "NotchOverlayPanel")
     private var window: NotchWindow?
     private var hostingView: NSHostingView<NotchDictationView>?
     private let viewModel = NotchViewModel()
@@ -47,7 +48,31 @@ final class NotchOverlayPanel {
     /// Whether the panel is in a healthy state (window exists and is valid).
     /// Used for defensive recovery when the window may have become stale.
     var isHealthy: Bool {
-        return window != nil
+        guard let window = window else {
+            logger.debug("Health check: window is nil")
+            return false
+        }
+        
+        guard window.contentView != nil else {
+            logger.warning("Health check: contentView is nil")
+            return false
+        }
+        
+        guard window.level == .screenSaver else {
+            logger.warning("Health check: window level demoted from .screenSaver(1000) to \(window.level.rawValue)")
+            return false
+        }
+        
+        // Check window is positioned on a valid screen
+        let windowOnScreen = NSScreen.screens.contains { screen in
+            screen.frame.intersects(window.frame)
+        }
+        guard windowOnScreen else {
+            logger.warning("Health check: window frame not on any screen")
+            return false
+        }
+        
+        return true
     }
     
     // MARK: - Initialization
@@ -70,6 +95,19 @@ final class NotchOverlayPanel {
         // Create window if needed
         if window == nil {
             createWindow()
+        }
+        
+        // Re-apply window config to prevent macOS from silently modifying properties
+        // Pattern from CopilotForXcode which re-applies level on every access()
+        // This fixes fullscreen overlay issues that develop over time
+        if let window = window {
+            window.level = .screenSaver
+            window.collectionBehavior = [
+                .fullScreenAuxiliary,
+                .stationary,
+                .canJoinAllSpaces,
+                .ignoresCycle
+            ]
         }
         
         // Show window (collapsed initially) - use orderFrontRegardless to avoid focus stealing
