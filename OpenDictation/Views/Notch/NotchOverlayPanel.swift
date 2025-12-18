@@ -97,21 +97,41 @@ final class NotchOverlayPanel {
             createWindow()
         }
         
+        guard let window = window else { return }
+        
         // Re-apply window config to prevent macOS from silently modifying properties
         // Pattern from CopilotForXcode which re-applies level on every access()
-        // This fixes fullscreen overlay issues that develop over time
-        if let window = window {
-            window.level = .screenSaver
-            window.collectionBehavior = [
-                .fullScreenAuxiliary,
-                .stationary,
-                .canJoinAllSpaces,
-                .ignoresCycle
-            ]
+        let oldLevel = window.level.rawValue
+        let oldBehavior = window.collectionBehavior
+        
+        window.level = .screenSaver
+        let defaultBehavior: NSWindow.CollectionBehavior = [
+            .fullScreenAuxiliary,
+            .stationary,
+            .canJoinAllSpaces,
+            .ignoresCycle
+        ]
+        
+        // Force move to active space if detected as off-space (Production fix for isVisible: true but isOnActiveSpace: false)
+        if !window.isOnActiveSpace {
+            logger.warning("Window not on active space, forcing move")
+            window.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
+            window.orderFrontRegardless()
+            window.collectionBehavior = defaultBehavior
+        } else {
+            window.collectionBehavior = defaultBehavior
+            window.orderFrontRegardless()
         }
         
-        // Show window (collapsed initially) - use orderFrontRegardless to avoid focus stealing
-        window?.orderFrontRegardless()
+        // Log if properties were different (indicates macOS modified them)
+        if oldLevel != 1000 || oldBehavior.rawValue != defaultBehavior.rawValue {
+            logger.debug("Window config drift corrected - level: \(oldLevel)->1000, behavior: \(oldBehavior.rawValue)->\(defaultBehavior.rawValue)")
+        }
+        
+        // Final visibility check
+        if !window.isVisible || !window.isOnActiveSpace {
+            logger.error("Window visibility issue persists - isVisible: \(window.isVisible), isOnActiveSpace: \(window.isOnActiveSpace)")
+        }
         
         // Apply 100ms render delay before expanding (NotchDrop pattern)
         DispatchQueue.main.asyncAfter(deadline: .now() + NotchWindow.renderDelay) { [weak self] in
