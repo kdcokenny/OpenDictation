@@ -88,7 +88,8 @@ final class NotchOverlayPanel {
     // MARK: - Public Methods
     
     /// Shows the panel with expand animation.
-    func show() {
+    /// - Parameter isRetry: Whether this is a retry attempt after a recovery action.
+    func show(isRetry: Bool = false) {
         isDismissing = false
         viewModel.setVisualState(.recording)
         
@@ -99,11 +100,8 @@ final class NotchOverlayPanel {
         
         guard let window = window else { return }
         
-        // Re-apply window config to prevent macOS from silently modifying properties
-        // Pattern from CopilotForXcode which re-applies level on every access()
-        let oldLevel = window.level.rawValue
-        let oldBehavior = window.collectionBehavior
-        
+        // 1. Re-apply window config
+        // This prevents macOS from silently modifying window properties over time.
         window.level = .screenSaver
         let defaultBehavior: NSWindow.CollectionBehavior = [
             .fullScreenAuxiliary,
@@ -112,9 +110,9 @@ final class NotchOverlayPanel {
             .ignoresCycle
         ]
         
-        // Force move to active space if detected as off-space (Production fix for isVisible: true but isOnActiveSpace: false)
+        // 2. Handling for "Window stuck on wrong space"
         if !window.isOnActiveSpace {
-            logger.warning("Window not on active space, forcing move")
+            logger.warning("Window not on active space, attempting force move")
             window.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
             window.orderFrontRegardless()
             window.collectionBehavior = defaultBehavior
@@ -123,17 +121,27 @@ final class NotchOverlayPanel {
             window.orderFrontRegardless()
         }
         
-        // Log if properties were different (indicates macOS modified them)
-        if oldLevel != 1000 || oldBehavior.rawValue != defaultBehavior.rawValue {
-            logger.debug("Window config drift corrected - level: \(oldLevel)->1000, behavior: \(oldBehavior.rawValue)->\(defaultBehavior.rawValue)")
+        // 3. Self-healing Recovery
+        // If the window is still not on the active space despite our efforts,
+        // it means the window instance is corrupted in the Window Server (common after sleep/wake).
+        // We destroy and recreate the instance exactly once.
+        if !window.isOnActiveSpace && !isRetry {
+            logger.info("Window space corruption detected. Triggering self-healing recovery.")
+            
+            let savedCallback = onDismissCompleted
+            destroy()
+            onDismissCompleted = savedCallback
+            
+            show(isRetry: true)
+            return
         }
         
-        // Final visibility check
+        // Log failure if still not visible after retry
         if !window.isVisible || !window.isOnActiveSpace {
-            logger.error("Window visibility issue persists - isVisible: \(window.isVisible), isOnActiveSpace: \(window.isOnActiveSpace)")
+             logger.error("Final visibility check failed - isVisible: \(window.isVisible), isOnSpace: \(window.isOnActiveSpace)")
         }
         
-        // Apply 100ms render delay before expanding (NotchDrop pattern)
+        // Apply 100ms render delay before expanding
         DispatchQueue.main.asyncAfter(deadline: .now() + NotchWindow.renderDelay) { [weak self] in
             self?.viewModel.expand()
         }
