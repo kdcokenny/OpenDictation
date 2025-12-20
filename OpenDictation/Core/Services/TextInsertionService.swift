@@ -7,14 +7,14 @@ import os.log
 ///
 /// Implements the "Always Paste" strategy with Apple-quality hardening:
 /// 1. Save current clipboard state (all types, not just string)
-/// 2. Set text to clipboard with verification
+/// 2. Set text to clipboard with multi-tier changeCount verification
 /// 3. Simulate Cmd+V via CGEvent with explicit key events
 /// 4. Restore previous clipboard state after synchronous delay
 ///
 /// Hardening techniques from industry analysis:
 /// - `.combinedSessionState` for proper event coordination
-/// - 50ms clipboard stabilization delay before paste
-/// - 150ms synchronous delay for paste completion
+/// - 3-attempt retry loop for clipboard writes with escalating delays
+/// - changeCount polling (200ms timeout) for asynchronous commitment verification
 /// - Full pasteboard preservation (all types)
 /// - Concurrency lock to prevent overlapping operations
 /// - Event source suppression to prevent input interference
@@ -79,34 +79,62 @@ final class TextInsertionService {
         // 2. Save previous clipboard contents (all types)
         let savedContents = savePasteboardContents(pasteboard)
         
-        // 3. Set new text to clipboard
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        // 3. Robust Write-Verify Cycle
+        // We attempt to write and verify the clipboard up to 3 times with escalating delays.
+        // This handles rare macOS pasteboard race conditions or system-level coalescing.
+        var verified = false
+        let maxAttempts = 3
         
-        // 4. Verify clipboard content was set correctly
-        guard pasteboard.string(forType: .string) == text else {
-            logger.error("Clipboard content not set correctly - aborting paste")
+        for attempt in 1...maxAttempts {
+            let changeCountBefore = pasteboard.changeCount
+            
+            if attempt > 1 {
+                let delay = Double(attempt - 1) * 0.05 // 50ms, 100ms
+                logger.info("Clipboard write retry \(attempt) after \(delay)s delay")
+                Thread.sleep(forTimeInterval: delay)
+            }
+            
+            // Write new content
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            
+            // Wait for commit (increased timeout to 200ms for robustness)
+            let committed = waitForClipboardCommit(
+                pasteboard: pasteboard,
+                expectedChangeCount: changeCountBefore + 1,
+                timeout: 0.2
+            )
+            
+            if committed && verifyClipboardContent(pasteboard: pasteboard, expected: text) {
+                verified = true
+                break
+            }
+            
+            logger.warning("Clipboard verification failed on attempt \(attempt)/\(maxAttempts)")
+        }
+        if verified {
+            // 4. Simulate Cmd+V
+            simulatePaste()
+            
+            // 5. Wait synchronously for paste to complete (150ms)
+            // This gives the target application time to read the clipboard.
+            Thread.sleep(forTimeInterval: 0.15)
+            
+            // 6. Restore clipboard if it still contains our text
+            // (avoids overwriting if user copied something else in the meantime)
+            if let current = pasteboard.string(forType: .string), current == text {
+                restorePasteboardContents(savedContents, to: pasteboard)
+                logger.debug("Clipboard restored")
+            }
+            return true
+        } else {
+            // 7. LOUD FAILURE: If we couldn't verify the write after all retries,
+            // we restore the user's original clipboard content to maintain system consistency.
+            // Returning false will trigger an error state (shake + sound) in the UI.
+            logger.error("CRITICAL: Failed to verify clipboard content after \(maxAttempts) attempts. Aborting paste and restoring original clipboard.")
             restorePasteboardContents(savedContents, to: pasteboard)
             return false
         }
-        
-        // 5. Wait for clipboard to stabilize (50ms)
-        Thread.sleep(forTimeInterval: 0.05)
-        
-        // 6. Simulate Cmd+V
-        simulatePaste()
-        
-        // 7. Wait synchronously for paste to complete (150ms)
-        Thread.sleep(forTimeInterval: 0.15)
-        
-        // 8. Restore clipboard if it still contains our text
-        // (avoids overwriting if user copied something else)
-        if let current = pasteboard.string(forType: .string), current == text {
-            restorePasteboardContents(savedContents, to: pasteboard)
-            logger.debug("Clipboard restored")
-        }
-        
-        return true
     }
     
     // MARK: - Private Helpers
@@ -199,5 +227,58 @@ final class TextInsertionService {
         vDown.post(tap: .cghidEventTap)
         vUp.post(tap: .cghidEventTap)
         cmdUp.post(tap: .cghidEventTap)
+    }
+    
+    // MARK: - Bulletproof Verification Helpers
+    
+    /// Polls until pasteboard.changeCount reaches expected value.
+    ///
+    /// - Parameters:
+    ///   - pasteboard: The pasteboard to monitor.
+    ///   - expectedChangeCount: The count we're waiting for.
+    ///   - timeout: Maximum time to wait in seconds.
+    private func waitForClipboardCommit(
+        pasteboard: NSPasteboard,
+        expectedChangeCount: Int,
+        timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        let pollInterval: TimeInterval = 0.005 // 5ms polling
+        
+        while Date() < deadline {
+            if pasteboard.changeCount >= expectedChangeCount {
+                return true
+            }
+            Thread.sleep(forTimeInterval: pollInterval)
+        }
+        
+        return false
+    }
+    
+    /// Verifies clipboard content matches expected text with multiple retries.
+    ///
+    /// - Parameters:
+    ///   - pasteboard: The pasteboard to check.
+    ///   - expected: The text we expect to find.
+    ///   - maxRetries: Number of attempts before giving up.
+    private func verifyClipboardContent(
+        pasteboard: NSPasteboard,
+        expected: String,
+        maxRetries: Int = 3
+    ) -> Bool {
+        for attempt in 1...maxRetries {
+            if let current = pasteboard.string(forType: .string), current == expected {
+                return true
+            }
+            
+            if attempt < maxRetries {
+                // Short wait before retry to let system state settle
+                Thread.sleep(forTimeInterval: 0.01) // 10ms
+            }
+        }
+        
+        let actual = pasteboard.string(forType: .string) ?? "<nil>"
+        logger.error("Clipboard verification failed after \(maxRetries) retries. Expected length: \(expected.count), Actual length: \(actual.count)")
+        return false
     }
 }

@@ -186,7 +186,13 @@ final class DictationStateMachine: ObservableObject {
                 } else {
                     // Try to insert text, check if it was actually inserted or just clipboard
                     let wasInserted = onInsertText?(trimmed) ?? false
-                    state = wasInserted ? .success : .copiedToClipboard
+                    if wasInserted {
+                        state = .success
+                    } else {
+                        // Insertion failed (clipboard verification timeout or missing permissions)
+                        // Trigger error state for loud feedback (shake + sound)
+                        state = .error(message: "Failed to insert text. Please try again.")
+                    }
                 }
             }
             
