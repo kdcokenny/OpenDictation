@@ -22,6 +22,7 @@ final class PermissionsManager: ObservableObject {
     
     private enum Keys {
         static let accessibilityPromptedVersion = "PermissionsManager_AccessibilityPromptedVersion"
+        static let lastLaunchedBuildNumber = "PermissionsManager_LastLaunchedBuildNumber"
     }
     
     // MARK: - Published Properties
@@ -167,6 +168,134 @@ final class PermissionsManager: ObservableObject {
                 
                 NSApp.terminate(nil)
             }
+        }
+    }
+    
+    // MARK: - Post-Update Handling
+    
+    /// Detects if this launch is after an app update that changed the binary.
+    /// Uses version comparison as primary signal (reliable) with delegate flag as optimization.
+    func isPostUpdateLaunch() -> Bool {
+        let currentBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        let lastBuild = UserDefaults.standard.string(forKey: Keys.lastLaunchedBuildNumber)
+        
+        // Always update for next launch
+        UserDefaults.standard.set(currentBuild, forKey: Keys.lastLaunchedBuildNumber)
+        
+        // Post-update if: (1) build changed, OR (2) Sparkle delegate set flag
+        let buildChanged = (lastBuild != nil) && (lastBuild != currentBuild)
+        let delegateFlag = UpdateService.consumePostUpdateFlag()
+        
+        if buildChanged || delegateFlag {
+            logger.info("Detected post-update launch (buildChanged: \(buildChanged), delegateFlag: \(delegateFlag))")
+            return true
+        }
+        
+        return false
+    }
+    
+    /// Handles accessibility check specifically after an auto-update.
+    /// Terminates app so user can manually relaunch for proper TCC registration.
+    func handlePostUpdateAccessibilityCheck() {
+        // Already granted? Continue normally (user may have manually fixed or relaunch worked)
+        if AXIsProcessTrusted() {
+            logger.info("Accessibility already granted on post-update launch")
+            isAccessibilityGranted = true
+            return
+        }
+        
+        logger.info("Post-update launch detected - accessibility not granted")
+        
+        // Force app to front
+        NSApp.activate(ignoringOtherApps: true)
+        
+        // Reset stale TCC entries
+        let resetSucceeded = resetAccessibilityAndReturnStatus()
+        
+        if resetSucceeded {
+            showPostUpdateQuitDialog()
+        } else {
+            showManualRemovalDialog()
+        }
+        
+        NSApp.terminate(nil)
+    }
+    
+    /// Shows dialog when tccutil reset succeeded.
+    private func showPostUpdateQuitDialog() {
+        let alert = NSAlert()
+        alert.messageText = "One More Step After Update"
+        alert.informativeText = """
+        Open Dictation was just updated. macOS security requires you to:
+        
+        1. Click "Quit" below
+        2. Reopen Open Dictation from the Dock or Applications folder
+        3. Enable accessibility permission when prompted
+        
+        This is a one-time step after updates.
+        """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Open Applications Folder")
+        
+        if alert.runModal() == .alertSecondButtonReturn {
+            NSWorkspace.shared.selectFile(Bundle.main.bundlePath, inFileViewerRootedAtPath: "/Applications")
+        }
+    }
+    
+    /// Shows dialog when tccutil reset FAILED - user must manually remove.
+    private func showManualRemovalDialog() {
+        let alert = NSAlert()
+        alert.messageText = "Manual Step Required"
+        alert.informativeText = """
+        Open Dictation was just updated, but automatic permission reset failed.
+        
+        Please follow these steps:
+        
+        1. Click "Open System Settings" below
+        2. Find "Open Dictation" in the list
+        3. Click the minus (-) button to REMOVE it
+        4. Close this app and reopen it
+        5. Re-add Open Dictation when prompted
+        
+        Toggling the checkbox off/on will NOT work—you must fully remove it.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Quit")
+        
+        if alert.runModal() == .alertFirstButtonReturn {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+    
+    /// Resets accessibility and returns whether it succeeded.
+    private nonisolated func resetAccessibilityAndReturnStatus() -> Bool {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return false }
+        
+        do {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            process.arguments = ["reset", "Accessibility", bundleID]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            
+            let log = OSLog.app(category: "PermissionsManager")
+            if process.terminationStatus == 0 {
+                os_log("Reset accessibility permissions for %{public}@", log: log, type: .info, bundleID)
+                return true
+            } else {
+                os_log("tccutil reset failed with status %d", log: log, type: .error, process.terminationStatus)
+                return false
+            }
+        } catch {
+            let log = OSLog.app(category: "PermissionsManager")
+            os_log("Failed to run tccutil: %{public}@", log: log, type: .error, error.localizedDescription)
+            return false
         }
     }
     

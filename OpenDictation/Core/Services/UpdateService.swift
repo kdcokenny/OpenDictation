@@ -12,6 +12,7 @@ final class UpdateService: ObservableObject {
     static let shared = UpdateService()
     
     private let controller: SPUStandardUpdaterController
+    private let delegate = UpdateServiceDelegate()
     
     /// The underlying SPUUpdater for bindings and state observation
     var updater: SPUUpdater { controller.updater }
@@ -22,7 +23,7 @@ final class UpdateService: ObservableObject {
     private init() {
         controller = SPUStandardUpdaterController(
             startingUpdater: true,
-            updaterDelegate: nil,
+            updaterDelegate: delegate,
             userDriverDelegate: nil
         )
         
@@ -40,5 +41,35 @@ final class UpdateService: ObservableObject {
     /// Manually check for updates (triggered by menu item or button)
     func checkForUpdates() {
         controller.updater.checkForUpdates()
+    }
+}
+
+// MARK: - Update Delegate
+
+/// Separate delegate class to handle Sparkle callbacks.
+/// This avoids Swift init order issues (can't pass self to constructor before init).
+private final class UpdateServiceDelegate: NSObject, SPUUpdaterDelegate {
+    
+    func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
+        // Set flag so post-update launch can detect this was an auto-update relaunch
+        // Using synchronize() to ensure it's written before the process terminates
+        UserDefaults.standard.set(true, forKey: kPostUpdateRelaunchKey)
+        UserDefaults.standard.synchronize()
+    }
+}
+
+// MARK: - Post-Update Detection
+
+/// File-level constant to avoid Swift concurrency issues with accessing MainActor-isolated properties
+private let kPostUpdateRelaunchKey = "OpenDictation_PostUpdateRelaunch"
+
+extension UpdateService {
+    /// Checks and clears the post-update relaunch flag
+    static func consumePostUpdateFlag() -> Bool {
+        let value = UserDefaults.standard.bool(forKey: kPostUpdateRelaunchKey)
+        if value {
+            UserDefaults.standard.removeObject(forKey: kPostUpdateRelaunchKey)
+        }
+        return value
     }
 }
