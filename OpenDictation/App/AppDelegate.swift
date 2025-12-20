@@ -186,9 +186,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.stateMachine?.send(.escapePressed)
         }
         
-        // Only handle escape when panel is visible
+        // Only handle escape when dictation is active (state != .idle).
+        // Using state machine as source of truth is more robust than window visibility
+        // which can desync after window corruption.
         monitor.shouldHandleEscape = { [weak self] in
-            return self?.notchPanel?.isVisible == true
+            return self?.stateMachine?.state != .idle
         }
         
         // Start monitoring (lives for app lifetime)

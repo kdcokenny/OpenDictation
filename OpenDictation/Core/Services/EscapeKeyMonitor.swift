@@ -1,13 +1,14 @@
 import AppKit
+import CoreGraphics
 import os.log
 
-/// Singleton service that monitors for Escape key presses globally.
+/// Singleton service that monitors for Escape key presses globally using a CGEvent tap.
 ///
 /// This service lives for the entire app lifetime and is NOT tied to the
-/// NotchOverlayPanel lifecycle. This follows NotchDrop's pattern of keeping
-/// event monitors separate from UI components to survive screen changes.
+/// NotchOverlayPanel lifecycle. This uses a low-level CGEvent tap which allows
+/// consuming events globally, preventing them from leaking to other applications.
 ///
-/// Pattern: Singleton event monitor (NotchDrop's EventMonitors class)
+/// Pattern: CGEvent tap (ghostty, Rectangle, alt-tab-macos pattern)
 @MainActor
 final class EscapeKeyMonitor {
     
@@ -17,8 +18,8 @@ final class EscapeKeyMonitor {
     
     // MARK: - Properties
     
-    private var globalMonitor: Any?
-    private var localMonitor: Any?
+    private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
     private let logger = Logger.app(category: "EscapeKeyMonitor")
     
     /// Whether monitoring is active
@@ -36,37 +37,51 @@ final class EscapeKeyMonitor {
     
     // MARK: - Public Methods
     
-    /// Starts monitoring for Escape key presses.
-    /// Safe to call multiple times (will not create duplicate monitors).
+    /// Starts monitoring for Escape key presses using a CGEvent tap.
+    /// Safe to call multiple times.
     func start() {
         guard !isMonitoring else { return }
         
-        // Global monitor for when app is not focused
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handleKeyEvent(event)
+        let eventMask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+        
+        // Create event tap - requires Accessibility permissions.
+        // We use .cgSessionEventTap to intercept events before other apps receive them.
+        // We use .defaultTap to enable event consumption.
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: eventMask,
+            callback: Self.eventTapCallback,
+            userInfo: UnsafeMutableRawPointer(Unmanaged.passRetained(self).toOpaque())
+        ) else {
+            logger.error("Failed to create CGEvent tap - missing Accessibility permissions?")
+            return
         }
         
-        // Local monitor for when app is focused (and to consume the event)
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if self?.handleKeyEvent(event) == true {
-                return nil  // Consume the event
-            }
-            return event
+        eventTap = tap
+        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        
+        if let source = runLoopSource {
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         }
+        
+        // Enable the tap
+        CGEvent.tapEnable(tap: tap, enable: true)
         
         isMonitoring = true
-        logger.debug("Escape key monitoring started")
+        logger.debug("Escape key monitoring started (CGEvent tap)")
     }
     
     /// Stops monitoring for Escape key presses.
     func stop() {
-        if let monitor = globalMonitor {
-            NSEvent.removeMonitor(monitor)
-            globalMonitor = nil
+        if let source = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+            runLoopSource = nil
         }
-        if let monitor = localMonitor {
-            NSEvent.removeMonitor(monitor)
-            localMonitor = nil
+        if let tap = eventTap {
+            CFMachPortInvalidate(tap)
+            eventTap = nil
         }
         isMonitoring = false
         logger.debug("Escape key monitoring stopped")
@@ -74,21 +89,40 @@ final class EscapeKeyMonitor {
     
     // MARK: - Private Methods
     
-    /// Handles a key event. Returns true if the event was consumed.
-    @discardableResult
-    private func handleKeyEvent(_ event: NSEvent) -> Bool {
-        // Check for Escape key (keyCode 53)
-        guard event.keyCode == 53 else { return false }
-        
-        // Check if we should handle this escape
-        guard shouldHandleEscape?() == true else { return false }
-        
-        logger.debug("Escape key pressed")
-        
-        DispatchQueue.main.async { [weak self] in
-            self?.onEscapePressed?()
+    /// C-style static callback required by CGEvent.tapCreate.
+    private static let eventTapCallback: CGEventTapCallBack = { proxy, type, cgEvent, userInfo in
+        guard let userInfo = userInfo else {
+            return Unmanaged.passUnretained(cgEvent)
         }
         
-        return true
+        // Get our monitor instance back from the opaque pointer
+        let monitor = Unmanaged<EscapeKeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
+        
+        // Only handle keyDown events
+        guard type == .keyDown else {
+            return Unmanaged.passUnretained(cgEvent)
+        }
+        
+        // Check for Escape key (keyCode 53)
+        let keyCode = cgEvent.getIntegerValueField(.keyboardEventKeycode)
+        guard keyCode == 53 else {
+            return Unmanaged.passUnretained(cgEvent)
+        }
+        
+        // Check if we should handle this escape (delegated to AppDelegate)
+        guard monitor.shouldHandleEscape?() == true else {
+            return Unmanaged.passUnretained(cgEvent)
+        }
+        
+        monitor.logger.debug("Escape key pressed - consuming event")
+        
+        // Notify of the escape press - must be done on main thread for Swift concurrency safety
+        DispatchQueue.main.async {
+            monitor.onEscapePressed?()
+        }
+        
+        // Return nil to consume the event, preventing it from bleeding through to other apps
+        return nil
     }
 }
+
