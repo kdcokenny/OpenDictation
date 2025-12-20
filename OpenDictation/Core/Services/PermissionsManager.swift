@@ -22,7 +22,6 @@ final class PermissionsManager: ObservableObject {
     
     private enum Keys {
         static let accessibilityPromptedVersion = "PermissionsManager_AccessibilityPromptedVersion"
-        static let lastLaunchedBuildNumber = "PermissionsManager_LastLaunchedBuildNumber"
     }
     
     // MARK: - Published Properties
@@ -37,6 +36,7 @@ final class PermissionsManager: ObservableObject {
     
     private let logger = Logger.app(category: "PermissionsManager")
     private var accessibilityObserver: Task<Void, Never>?
+    private var pollingTask: Task<Void, Never>?
     
     // MARK: - Initialization
     
@@ -46,6 +46,7 @@ final class PermissionsManager: ObservableObject {
     
     deinit {
         accessibilityObserver?.cancel()
+        pollingTask?.cancel()
     }
     
     // MARK: - Public Methods
@@ -96,208 +97,63 @@ final class PermissionsManager: ObservableObject {
     /// This prevents the escape key bug by ensuring accessibility is granted
     /// before any event taps are created.
     func checkAccessibilityOnLaunch() {
-        // We intentionally don't use the system prompt as our dialog explains it better.
         // Use the raw string value to avoid Swift 6 concurrency issues with the global constant
         // kAXTrustedCheckOptionPrompt's value is "AXTrustedCheckOptionPrompt"
-        let options = ["AXTrustedCheckOptionPrompt": false] as CFDictionary
-        if AXIsProcessTrustedWithOptions(options) {
+        let checkOptions = ["AXTrustedCheckOptionPrompt": false] as CFDictionary
+        if AXIsProcessTrustedWithOptions(checkOptions) {
             // Already granted - update status and continue
             isAccessibilityGranted = true
             return
         }
         
         // Reset any stale TCC entries before requesting permission.
-        // This is critical for ad-hoc signed apps: after an update, the app's code signature
-        // changes, but the old TCC entry remains. The user sees "Open Dictation" checked in
-        // System Settings, but AXIsProcessTrusted() returns false because the signature
-        // doesn't match. Resetting clears this stale state.
+        // This is critical for ad-hoc signed apps (like Open Dictation distributed via GitHub).
         // Pattern from Loop (github.com/MrKai77/Loop).
         logger.info("Accessibility not granted - resetting TCC to clear any stale entries")
         resetAccessibility()
         
-        // Open System Settings to Accessibility pane
+        // Call with prompt:true to REGISTER the app with TCC.
+        // This is what actually makes the app appear in the Accessibility list.
+        // We let the system show its native prompt instead of showing our own custom dialog first,
+        // which prevents "triple popup" fatigue (System Prompt + Our Dialog + System Settings).
+        let promptOptions = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(promptOptions)
+        
+        // Also open System Settings to Accessibility pane for convenience
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
         
-        // Force our app to front so alert appears on top (Clipy pattern)
+        // Force our app to front so symbols appear on top
         NSApp.activate(ignoringOtherApps: true)
         
-        // Show custom alert explaining what's needed
-        let alert = NSAlert()
-        alert.messageText = "Open Dictation needs accessibility access."
-        alert.informativeText = """
-        Open Dictation needs accessibility to paste transcribed text directly into other apps.
-        
-        In the System Settings window that just opened, find "Open Dictation" in the list and check its checkbox. Then click the "Continue" button here.
-        """
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Continue")
-        alert.addButton(withTitle: "Quit")
-        
-        guard alert.runModal() == .alertFirstButtonReturn else {
-            // User clicked "Quit"
-            NSApp.terminate(nil)
-            return
-        }
-        
-        // Verify user actually granted permission before relaunching
-        // This prevents infinite loop if user clicks "Continue" without granting permission
-        if !AXIsProcessTrustedWithOptions(options) {
-            // Still not granted - show error and quit
-            let errorAlert = NSAlert()
-            errorAlert.messageText = "Permission not granted"
-            errorAlert.informativeText = "Open Dictation cannot continue without accessibility permission. Please enable it in System Settings and relaunch the app."
-            errorAlert.alertStyle = .critical
-            errorAlert.addButton(withTitle: "Quit")
-            errorAlert.runModal()
-            NSApp.terminate(nil)
-            return
-        }
-        
-        // Permission granted - relaunch to ensure clean state
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-        
-        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
-            DispatchQueue.main.async {
-                if let error = error {
-                    NSApp.presentError(error)
+        // Start polling until permission is granted (Pattern from Rectangle)
+        pollForAccessibilityPermission()
+    }
+    
+    /// Polls until accessibility permission is granted.
+    private func pollForAccessibilityPermission() {
+        pollingTask?.cancel()
+        pollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                // Check every 500ms (Pattern from Rectangle)
+                try? await Task.sleep(for: .milliseconds(500))
+                
+                guard let self = self else { return }
+                
+                if await MainActor.run(body: { AXIsProcessTrusted() }) {
+                    await MainActor.run {
+                        self.isAccessibilityGranted = true
+                        self.accessibilityDidUpdate.send()
+                        self.pollingTask = nil
+                    }
                     return
                 }
-                
-                NSApp.terminate(nil)
             }
         }
     }
     
-    // MARK: - Post-Update Handling
-    
-    /// Detects if this launch is after an app update that changed the binary.
-    /// Uses version comparison as primary signal (reliable) with delegate flag as optimization.
-    func isPostUpdateLaunch() -> Bool {
-        let currentBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
-        let lastBuild = UserDefaults.standard.string(forKey: Keys.lastLaunchedBuildNumber)
-        
-        // Always update for next launch
-        UserDefaults.standard.set(currentBuild, forKey: Keys.lastLaunchedBuildNumber)
-        
-        // Post-update if: (1) build changed, OR (2) Sparkle delegate set flag
-        let buildChanged = (lastBuild != nil) && (lastBuild != currentBuild)
-        let delegateFlag = UpdateService.consumePostUpdateFlag()
-        
-        if buildChanged || delegateFlag {
-            logger.info("Detected post-update launch (buildChanged: \(buildChanged), delegateFlag: \(delegateFlag))")
-            return true
-        }
-        
-        return false
-    }
-    
-    /// Handles accessibility check specifically after an auto-update.
-    /// Terminates app so user can manually relaunch for proper TCC registration.
-    func handlePostUpdateAccessibilityCheck() {
-        // Already granted? Continue normally (user may have manually fixed or relaunch worked)
-        if AXIsProcessTrusted() {
-            logger.info("Accessibility already granted on post-update launch")
-            isAccessibilityGranted = true
-            return
-        }
-        
-        logger.info("Post-update launch detected - accessibility not granted")
-        
-        // Force app to front
-        NSApp.activate(ignoringOtherApps: true)
-        
-        // Reset stale TCC entries
-        let resetSucceeded = resetAccessibilityAndReturnStatus()
-        
-        if resetSucceeded {
-            showPostUpdateQuitDialog()
-        } else {
-            showManualRemovalDialog()
-        }
-        
-        NSApp.terminate(nil)
-    }
-    
-    /// Shows dialog when tccutil reset succeeded.
-    private func showPostUpdateQuitDialog() {
-        let alert = NSAlert()
-        alert.messageText = "One More Step After Update"
-        alert.informativeText = """
-        Open Dictation was just updated. macOS security requires you to:
-        
-        1. Click "Quit" below
-        2. Reopen Open Dictation from the Dock or Applications folder
-        3. Enable accessibility permission when prompted
-        
-        This is a one-time step after updates.
-        """
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Quit")
-        alert.addButton(withTitle: "Open Applications Folder")
-        
-        if alert.runModal() == .alertSecondButtonReturn {
-            NSWorkspace.shared.selectFile(Bundle.main.bundlePath, inFileViewerRootedAtPath: "/Applications")
-        }
-    }
-    
-    /// Shows dialog when tccutil reset FAILED - user must manually remove.
-    private func showManualRemovalDialog() {
-        let alert = NSAlert()
-        alert.messageText = "Manual Step Required"
-        alert.informativeText = """
-        Open Dictation was just updated, but automatic permission reset failed.
-        
-        Please follow these steps:
-        
-        1. Click "Open System Settings" below
-        2. Find "Open Dictation" in the list
-        3. Click the minus (-) button to REMOVE it
-        4. Close this app and reopen it
-        5. Re-add Open Dictation when prompted
-        
-        Toggling the checkbox off/on will NOT work—you must fully remove it.
-        """
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Open System Settings")
-        alert.addButton(withTitle: "Quit")
-        
-        if alert.runModal() == .alertFirstButtonReturn {
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                NSWorkspace.shared.open(url)
-            }
-        }
-    }
-    
-    /// Resets accessibility and returns whether it succeeded.
-    private nonisolated func resetAccessibilityAndReturnStatus() -> Bool {
-        guard let bundleID = Bundle.main.bundleIdentifier else { return false }
-        
-        do {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-            process.arguments = ["reset", "Accessibility", bundleID]
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            try process.run()
-            process.waitUntilExit()
-            
-            let log = OSLog.app(category: "PermissionsManager")
-            if process.terminationStatus == 0 {
-                os_log("Reset accessibility permissions for %{public}@", log: log, type: .info, bundleID)
-                return true
-            } else {
-                os_log("tccutil reset failed with status %d", log: log, type: .error, process.terminationStatus)
-                return false
-            }
-        } catch {
-            let log = OSLog.app(category: "PermissionsManager")
-            os_log("Failed to run tccutil: %{public}@", log: log, type: .error, error.localizedDescription)
-            return false
-        }
-    }
+
     
     // MARK: - Accessibility Permission
     

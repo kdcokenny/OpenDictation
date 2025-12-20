@@ -44,16 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Check accessibility FIRST - before any other setup.
         // This prevents the escape key bug by ensuring event taps can be created.
         permissionsManager = PermissionsManager()
-        
-        // Check for post-update launch (binary changed but accessibility lost)
-        if permissionsManager?.isPostUpdateLaunch() == true && !AXIsProcessTrusted() {
-            permissionsManager?.handlePostUpdateAccessibilityCheck()
-            // If we get here, handlePostUpdateAccessibilityCheck either handled it 
-            // and we continue (unlikely but possible) or it triggered a quit/relaunch flow.
-        } else {
-            // Normal launch flow
-            permissionsManager?.checkAccessibilityOnLaunch()
-        }
+        permissionsManager?.checkAccessibilityOnLaunch()
         
         // MARK: - App Setup
         // Check if app should be moved to Applications (before other setup)
