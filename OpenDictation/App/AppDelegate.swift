@@ -483,7 +483,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func wireNotchPanelCallbacks() {
         guard let sm = stateMachine else { return }
         
-        notchPanel?.onDismissCompleted = { [weak sm] in
+        notchPanel?.onDismissCompleted = { [weak sm, weak self] in
+            // Restore clipboard now that UI has fully dismissed
+            // This gives the target app ~650ms+ to process the paste
+            self?.textInsertionService?.restoreClipboard()
+            
             sm?.send(.dismissCompleted)
         }
     }

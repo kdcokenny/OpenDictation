@@ -32,7 +32,13 @@ final class TextInsertionService {
     /// Flag indicating if a paste operation is in progress
     private static var isInserting = false
     
-    // MARK: - Saved Clipboard State
+    // MARK: - Deferred Clipboard Restoration
+    
+    /// Saved pasteboard contents pending restoration (set after successful paste)
+    private var pendingRestore: SavedPasteboardContents?
+    
+    /// The text we inserted (for verification before restore)
+    private var insertedText: String?
     
     /// Saved pasteboard contents for restoration
     private struct SavedPasteboardContents {
@@ -116,16 +122,12 @@ final class TextInsertionService {
             // 4. Simulate Cmd+V
             simulatePaste()
             
-            // 5. Wait synchronously for paste to complete (150ms)
-            // This gives the target application time to read the clipboard.
-            Thread.sleep(forTimeInterval: 0.15)
+            // 5. Store for deferred restoration (will be restored after UI dismisses)
+            // This eliminates the race condition by waiting for the animation to complete
+            // before restoring, giving the target app ~650ms+ to process the paste.
+            self.pendingRestore = savedContents
+            self.insertedText = text
             
-            // 6. Restore clipboard if it still contains our text
-            // (avoids overwriting if user copied something else in the meantime)
-            if let current = pasteboard.string(forType: .string), current == text {
-                restorePasteboardContents(savedContents, to: pasteboard)
-                logger.debug("Clipboard restored")
-            }
             return true
         } else {
             // 7. LOUD FAILURE: If we couldn't verify the write after all retries,
@@ -135,6 +137,34 @@ final class TextInsertionService {
             restorePasteboardContents(savedContents, to: pasteboard)
             return false
         }
+    }
+    
+    /// Restores the clipboard to its previous state after a successful paste.
+    ///
+    /// Call this after the UI has fully dismissed to ensure the target app
+    /// has had sufficient time (~650ms+) to process the paste event.
+    func restoreClipboard() {
+        guard let savedContents = pendingRestore else {
+            logger.debug("No pending clipboard restore")
+            return
+        }
+        
+        let pasteboard = NSPasteboard.general
+        
+        // Only restore if clipboard still contains our inserted text
+        // (avoids overwriting if user copied something else in the meantime)
+        if let expected = insertedText,
+           let current = pasteboard.string(forType: .string),
+           current == expected {
+            restorePasteboardContents(savedContents, to: pasteboard)
+            logger.debug("Clipboard restored after UI dismiss")
+        } else {
+            logger.debug("Clipboard changed since paste, skipping restore")
+        }
+        
+        // Clear pending state
+        pendingRestore = nil
+        insertedText = nil
     }
     
     // MARK: - Private Helpers
