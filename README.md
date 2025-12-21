@@ -1,102 +1,75 @@
 <div align="center">
   <h1>Open Dictation</h1>
-  <p><strong>Voice-to-text for any macOS app, powered by local or cloud AI</strong></p>
+  <p><strong>A lightweight, notch-integrated dictation utility for macOS.</strong></p>
 
   <p>
     <a href="https://github.com/kdcokenny/OpenDictation/releases/latest"><img src="https://img.shields.io/badge/download-latest-brightgreen?style=for-the-badge" alt="Download"></a>
     <img src="https://img.shields.io/badge/platform-macOS-blue?style=for-the-badge" alt="Platform">
-    <img src="https://img.shields.io/badge/requirements-macOS%2014%2B-fa4e49?style=for-the-badge" alt="Requirements">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge" alt="License"></a>
   </p>
 
-  <!-- TODO: Add screenshot or demo GIF -->
-  <!-- <img src="screenshot.png" width="600" alt="Open Dictation Demo"> -->
+  <img src="https://github.com/user-attachments/assets/cb5c8ca9-74e0-43db-b46a-e4c9ecb5d76c" width="450" alt="Open Dictation Demo showing Notch UI and instant text insertion">
 </div>
+
+---
+
+## Why Open Dictation?
+
+Native macOS dictation is unreliable—it frequently times out, fails to start, and struggles with technical jargon. Existing AI alternatives often demand $10+/month subscriptions just to use your own Mac's hardware.
+
+Open Dictation is a **headless utility** designed to fix this.
+
+- **Zero Subscriptions:** Run Whisper models locally on your Neural Engine or use your own API keys for cloud processing.
+- **Notch Integration:** Visual feedback lives in the "Dynamic Island" area. No floating windows blocking your code.
+- **Developer Ready:** Doesn't time out while you're thinking. Handles camelCase, file paths, and technical terms natively.
+- **No Bloat:** 100% focused on getting text to your cursor. No sidebars, no proprietary "clouds," no nonsense.
 
 ---
 
 ## Installation
 
 ### Requirements
+- macOS 14+ (Sonoma or later)
+- Apple Silicon Mac (M1, M2, M3, M4)
+- **MacBook with notch** for the integrated UI (Dictation still works on non-notch Macs via audio cues).
 
-- macOS 14 (Sonoma) or later
-- Apple Silicon Mac (M1 or later)
-- **MacBook with notch** for visual UI (2021 MacBook Pro, 2022+ MacBook Air)
+### Quick Start
+1. **[Download the latest DMG](https://github.com/kdcokenny/OpenDictation/releases/latest/download/OpenDictation.dmg)**
+2. Drag to Applications.
+3. Open Terminal and run this to bypass the quarantine flag (required for non-signed builds):
+   ```bash
+   xattr -rd com.apple.quarantine /Applications/OpenDictation.app
 
-> [!IMPORTANT]
-> Open Dictation requires **Accessibility** and **Microphone** permissions.
-> You'll be prompted to grant these on first launch.
-
-> [!NOTE]
-> **Non-notch Macs**: Dictation still works but without visual feedback. You'll hear audio cues (start/stop sounds) to indicate state. If you'd like visual UI support for non-notch Macs, please [file a feature request](https://github.com/kdcokenny/OpenDictation/issues/new).
-
-### Download
-
-[![Download DMG](https://img.shields.io/badge/Download-DMG-blue?style=for-the-badge&logo=apple)](https://github.com/kdcokenny/OpenDictation/releases/latest/download/OpenDictation.dmg)
-
-Download the DMG, open it, and drag Open Dictation to your Applications folder.
-
-### First Launch
-
-Since Open Dictation is distributed outside the Mac App Store, macOS may show a warning or say the app is "damaged."
-
-**To fix this**, run this command in Terminal:
-
-```bash
-xattr -rd com.apple.quarantine /Applications/OpenDictation.app
 ```
 
-This removes the quarantine flag that macOS adds to downloaded apps. You only need to do this once.
-
-### Homebrew
-
-```bash
-# Coming soon
-# brew install --cask open-dictation
-```
-
-### Development
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, editor setup, and contribution guidelines.
+4. Launch and grant **Accessibility** and **Microphone** permissions.
 
 ---
 
 ## Usage
 
-1. Press **Option + Space** to start recording
-2. Speak your text
-3. Press **Option + Space** again to stop and transcribe
-4. Text is automatically inserted into the active field
-
-Press **Escape** at any time to cancel.
+* **Option + Space**: Start recording.
+* **Speak**: The Notch will provide visual feedback while you talk.
+* **Option + Space**: Stop recording. The transcribed text is inserted at your cursor instantly.
+* **Escape**: Cancel the current recording.
 
 ---
 
 ## Configuration
 
-Open **Settings** from the menu bar icon to configure:
-
-| Setting | Description |
-|---------|-------------|
-| **Hotkey** | Customize the activation shortcut |
-| **Mode** | Local (offline, private) or Cloud (API-based) |
-| **API Key** | Your OpenAI-compatible API key (Cloud mode) |
-| **Language** | 50+ languages or auto-detect |
-
-### Model Storage
-
-Whisper models are stored in `~/Library/Application Support/com.opendictation/Models/`. The app automatically selects the best model for your system.
+| Feature | Description |
+| --- | --- |
+| **Local Mode** | Uses Whisper models on-device. No data leaves your Mac. |
+| **Cloud Mode** | Connect to OpenAI, Groq, or any OpenAI-compatible API. |
+| **BYOK** | "Bring Your Own Key"—pay the raw API cost ($0.003) instead of a platform markup. |
+| **Auto-Paste** | Directly inserts text into the active field (IDE, Slack, Browser). |
 
 ---
 
-## Features
+## Model Support
 
-- **Dynamic Island-style UI** — Notch-integrated dictation panel on MacBooks with notch
-- **Local transcription** — Run Whisper models on-device for privacy
-- **Cloud transcription** — Connect to OpenAI, Groq, or any compatible API
-- **Smart text insertion** — Automatically pastes into the active field
-- **Audio feedback** — Start/stop sounds matching macOS conventions
-- **Automatic updates** — Stay up to date via Sparkle
+The app automatically manages Whisper models stored in:
+`~/Library/Application Support/com.opendictation/Models/`
 
 ---
 
