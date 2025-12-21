@@ -39,8 +39,7 @@ Open Dictation is a **headless utility** designed to fix this.
 3. Open Terminal and run this to bypass the quarantine flag (required for non-signed builds):
    ```bash
    xattr -rd com.apple.quarantine /Applications/OpenDictation.app
-
-```
+   ```
 
 4. Launch and grant **Accessibility** and **Microphone** permissions.
 
