@@ -22,8 +22,8 @@ struct NotchDictationView: View {
 
     // MARK: - Constants
 
-    /// Icon size for SF Symbols.
-    private let iconSize: CGFloat = 16
+    /// Icon size for SF Symbols (matches waveform totalHeight).
+    private let iconSize: CGFloat = 14
 
     /// Shake animation offset.
     @State private var shakeOffset: CGFloat = 0
@@ -104,11 +104,11 @@ struct NotchDictationView: View {
         }
     }
 
-    // MARK: - Left Content (Static Microphone Icon)
+    // MARK: - Left Content (Context-Aware Icon)
     
-    /// Static microphone icon indicating dictation mode.
+    /// Icon indicating dictation context - uses ContextCategory SF symbols.
     private var leftContent: some View {
-        Image(systemName: "microphone.fill")
+        Image(systemName: viewModel.currentContext.category.sfSymbol)
             .font(.system(size: iconSize, weight: .regular))
             .foregroundStyle(.white)
     }

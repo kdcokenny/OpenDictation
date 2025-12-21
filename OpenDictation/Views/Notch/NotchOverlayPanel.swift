@@ -158,6 +158,12 @@ final class NotchOverlayPanel {
         viewModel.setAudioLevel(level)
     }
     
+    /// Sets the context profile for this dictation session.
+    /// - Parameter context: The captured context (code or prose).
+    func setContext(_ context: ContextProfile) {
+        viewModel.currentContext = context
+    }
+    
     /// Hides the panel with collapse animation.
     func hide() {
         guard !isDismissing else { return }

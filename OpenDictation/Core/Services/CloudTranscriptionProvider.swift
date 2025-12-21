@@ -109,10 +109,12 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
     
     /// Transcribes the audio file at the given URL.
     ///
-    /// - Parameter audioURL: URL to the audio file (wav, m4a, mp3, etc.)
+    /// - Parameters:
+    ///   - audioURL: URL to the audio file (wav, m4a, mp3, etc.)
+    ///   - context: The pre-captured context profile.
     /// - Returns: The transcribed text.
     /// - Throws: `TranscriptionError` if transcription fails.
-    func transcribe(audioURL: URL) async throws -> String {
+    func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
         // Get API key from Keychain
         guard let apiKey = KeychainService.shared.load(KeychainService.Key.apiKey),
               !apiKey.isEmpty else {
@@ -167,7 +169,8 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
         let body = buildMultipartBody(
             boundary: boundary,
             audioData: audioData,
-            audioFileName: audioURL.lastPathComponent
+            audioFileName: audioURL.lastPathComponent,
+            context: context
         )
         
         // Make the request using upload API (better for large files)
@@ -236,7 +239,7 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
     
     // MARK: - Multipart Form Data
     
-    private func buildMultipartBody(boundary: String, audioData: Data, audioFileName: String) -> Data {
+    private func buildMultipartBody(boundary: String, audioData: Data, audioFileName: String, context: ContextProfile) -> Data {
         var body = Data()
         let crlf = "\r\n"
         
@@ -277,6 +280,13 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
             appendString("--\(boundary)\(crlf)")
             appendString("Content-Disposition: form-data; name=\"language\"\(crlf)\(crlf)")
             appendString("\(languageCode)\(crlf)")
+        }
+
+        // Prompt field (only if context provides one)
+        if let prompt = context.whisperPrompt {
+            appendString("--\(boundary)\(crlf)")
+            appendString("Content-Disposition: form-data; name=\"prompt\"\(crlf)\(crlf)")
+            appendString("\(prompt)\(crlf)")
         }
         
         // Closing boundary

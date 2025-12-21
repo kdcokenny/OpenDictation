@@ -37,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Active transcription task (for cancellation support)
     private var transcriptionTask: Task<Void, Never>?
     
+    /// App activation observer token (for cleanup)
+    private var appActivationObserver: NSObjectProtocol?
+    
     // MARK: - NSApplicationDelegate
     
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -72,12 +75,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     func applicationWillTerminate(_ notification: Notification) {
-        // Remove screen change observer
+        // Remove observers
         NotificationCenter.default.removeObserver(
             self,
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil
         )
+        
+        // Remove app activation observer
+        if let observer = appActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            appActivationObserver = nil
+        }
         
         // Restore volume if still ducked (safety net)
         audioFeedbackService?.restoreVolume()
@@ -241,6 +250,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             .store(in: &cancellables)
         
+        // Observe app activation to update context in real-time during recording
+        // Single source of truth: state machine holds the context, panel displays it
+        appActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self,
+                  let sm = self.stateMachine,
+                  sm.state == .recording else { return }
+            
+            // Update state machine (source of truth)
+            let context = ContextDetector.detect()
+            sm.currentContext = context
+            
+            // Sync to panel display
+            self.notchPanel?.setContext(context)
+        }
+        
         // Wire up state machine callbacks
         sm.onShowPanel = { [weak self] in
             guard let self = self else { return }
@@ -274,6 +302,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             
             // Show panel if available (non-notch Macs get audio feedback only)
+            // Pass captured context to the panel for icon display
+            if let sm = self.stateMachine {
+                self.notchPanel?.setContext(sm.currentContext)
+            }
             self.notchPanel?.show()
         }
         
@@ -378,7 +410,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 
                 do {
-                    let text = try await TranscriptionCoordinator.shared.transcribe(audioURL: audioURL)
+                    // Capture state machine reference again inside Task if needed, but it's captured outside
+                    let context = stateMachine?.currentContext ?? .prose
+                    let text = try await TranscriptionCoordinator.shared.transcribe(audioURL: audioURL, context: context)
                     
                     // Check if task was cancelled
                     guard !Task.isCancelled else { return }
@@ -432,11 +466,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkeyService?.onHotkeyPressed = { [weak sm] in
             guard let sm = sm else { return }
             
+            // Capture context NOW (at boundary) - runs on MainActor
+            let context = ContextDetector.detect()
+            
             // Toggle behavior: if recording, stop; otherwise start
             if sm.state == .recording {
-                sm.send(.hotkeyPressed)  // This stops recording
+                sm.send(.hotkeyPressed(context: context))  // This stops recording
             } else if sm.state == .idle {
-                sm.send(.hotkeyPressed)  // This starts recording
+                sm.send(.hotkeyPressed(context: context))  // This starts recording
             }
             // Ignore hotkey in other states (processing, success, etc.)
         }
@@ -457,7 +494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sm.isMockMode = true
         
         print("[Test] Error: recording → processing → error (mock mode)")
-        sm.send(.hotkeyPressed)  // → .recording (no real recording)
+        sm.send(.hotkeyPressed(context: .prose))  // → .recording (no real recording)
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak sm] in
             sm?.send(.stopRecording)

@@ -90,7 +90,7 @@ final class EscapeKeyMonitor {
     // MARK: - Private Methods
     
     /// C-style static callback required by CGEvent.tapCreate.
-    private static let eventTapCallback: CGEventTapCallBack = { proxy, type, cgEvent, userInfo in
+    private static let eventTapCallback: CGEventTapCallBack = { _, type, cgEvent, userInfo in
         guard let userInfo = userInfo else {
             return Unmanaged.passUnretained(cgEvent)
         }
@@ -125,4 +125,3 @@ final class EscapeKeyMonitor {
         return nil
     }
 }
-

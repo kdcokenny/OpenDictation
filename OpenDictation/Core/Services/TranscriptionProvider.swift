@@ -4,9 +4,11 @@ import Foundation
 /// Allows switching between local (whisper.cpp) and cloud (API) transcription.
 protocol TranscriptionProvider {
     /// Transcribes the audio file at the given URL.
-    /// - Parameter audioURL: URL to the audio file (wav, m4a, mp3, etc.)
+    /// - Parameters:
+    ///   - audioURL: URL to the audio file (wav, m4a, mp3, etc.)
+    ///   - context: The pre-captured context profile.
     /// - Returns: The transcribed text.
-    func transcribe(audioURL: URL) async throws -> String
+    func transcribe(audioURL: URL, context: ContextProfile) async throws -> String
 }
 
 /// Transcription mode selection.

@@ -26,7 +26,7 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
     // MARK: - TranscriptionProvider
     
     /// Transcribes the audio file at the given URL using the local Whisper model.
-    func transcribe(audioURL: URL) async throws -> String {
+    func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
         // Get selected model from ModelManager, with fallback to any available model
         let modelManager = await ModelManager.shared
         
@@ -41,7 +41,7 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
             try await loadModel(selectedModel)
         }
         
-        guard let context = whisperContext else {
+        guard let modelContext = whisperContext else {
             logger.error("Whisper context not available after load")
             throw WhisperError.modelLoadFailed
         }
@@ -51,12 +51,12 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
         let language = UserDefaults.standard.string(forKey: "language") ?? "auto"
         // Local mode uses deterministic transcription (temperature = 0)
         let temperature: Float = 0.0
-        // No initial prompt for local mode (keep transcription clean)
-        let initialPrompt: String? = nil
+        // Use pre-captured context (passed from boundary)
+        let initialPrompt: String? = context.whisperPrompt
         // No translation - user selects language directly
         let translateToEnglish = false
         
-        await context.configure(
+        await modelContext.configure(
             language: language,
             temperature: temperature,
             initialPrompt: initialPrompt,
@@ -81,7 +81,7 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
         logger.info("Loaded \(samples.count) audio samples, starting transcription")
         
         // Run transcription
-        let success = await context.fullTranscribe(samples: samples)
+        let success = await modelContext.fullTranscribe(samples: samples)
         
         guard success else {
             logger.error("Whisper transcription failed")
@@ -89,7 +89,7 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
         }
         
         // Get result
-        let rawText = await context.getTranscription()
+        let rawText = await modelContext.getTranscription()
         
         logger.info("Transcription complete: \(rawText.prefix(50))...")
         

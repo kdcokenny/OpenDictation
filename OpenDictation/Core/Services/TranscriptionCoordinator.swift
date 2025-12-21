@@ -38,17 +38,19 @@ actor TranscriptionCoordinator {
     // MARK: - Transcription
     
     /// Transcribes audio using the current mode's provider.
-    /// - Parameter audioURL: URL to the audio file
+    /// - Parameters:
+    ///   - audioURL: URL to the audio file
+    ///   - context: The pre-captured context profile
     /// - Returns: The transcribed text
-    func transcribe(audioURL: URL) async throws -> String {
+    func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
         let mode = currentMode
-        logger.info("Transcribing with \(mode.rawValue) mode")
+        logger.info("Transcribing with \(mode.rawValue) mode, context: \(String(describing: context))")
         
         switch mode {
         case .local:
-            return try await localProvider.transcribe(audioURL: audioURL)
+            return try await localProvider.transcribe(audioURL: audioURL, context: context)
         case .cloud:
-            return try await cloudProvider.transcribe(audioURL: audioURL)
+            return try await cloudProvider.transcribe(audioURL: audioURL, context: context)
         }
     }
     

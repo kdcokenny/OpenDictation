@@ -16,7 +16,7 @@ enum DictationState: Equatable {
 
 /// Events that trigger state transitions.
 enum DictationEvent {
-    case hotkeyPressed
+    case hotkeyPressed(context: ContextProfile)
     case stopRecording
     case transcriptionStarted
     case transcriptionCompleted(text: String)
@@ -46,6 +46,9 @@ final class DictationStateMachine: ObservableObject {
     // MARK: - Published State
     
     @Published private(set) var state: DictationState = .idle
+    
+    /// The context profile captured at hotkey press (persists across states)
+    internal(set) var currentContext: ContextProfile = .prose
     
     // MARK: - Mock Mode
     
@@ -83,7 +86,8 @@ final class DictationStateMachine: ObservableObject {
         switch (state, event) {
             
         // MARK: From Idle
-        case (.idle, .hotkeyPressed):
+        case (.idle, .hotkeyPressed(let context)):
+            currentContext = context
             state = .recording
             onShowPanel?()
             if !isMockMode {
@@ -91,13 +95,22 @@ final class DictationStateMachine: ObservableObject {
             }
             
         // MARK: From Recording
-        case (.recording, .hotkeyPressed),
-             (.recording, .stopRecording):
+        case (.recording, .hotkeyPressed(let context)):
+            // Update context to match where user ENDS (not starts) dictation
+            // This ensures the icon and transcription are in sync
+            currentContext = context
             if !isMockMode {
                 onStopRecording?()
             }
             // Don't transition yet - wait for transcription result or timeout
             // The transition to .processing happens via transcriptionStarted event
+            
+        case (.recording, .stopRecording):
+            // stopRecording doesn't carry context, keep existing
+            if !isMockMode {
+                onStopRecording?()
+            }
+            // Don't transition yet - wait for transcription result or timeout
             
         case (.recording, .transcriptionStarted):
             // Transcription has started, show processing state

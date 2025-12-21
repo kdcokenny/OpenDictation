@@ -153,8 +153,6 @@ final class PermissionsManager: ObservableObject {
         }
     }
     
-
-    
     // MARK: - Accessibility Permission
     
     /// Requests Accessibility permission if not already prompted this app version.

@@ -31,6 +31,9 @@ final class NotchViewModel: ObservableObject {
     /// Current audio level (0.0 to 1.0) from RecordingService for waveform visualization.
     @Published var audioLevel: Float = 0
     
+    /// The context profile for this dictation session (captured at hotkey press).
+    @Published var currentContext: ContextProfile = .prose
+    
     // MARK: - Hardware Notch Size
     
     /// The raw hardware notch size from the screen (no padding added).
