@@ -8,7 +8,7 @@
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge" alt="License"></a>
   </p>
 
-  <img src="https://github.com/user-attachments/assets/cb5c8ca9-74e0-43db-b46a-e4c9ecb5d76c" width="450" alt="Open Dictation Demo showing Notch UI and instant text insertion">
+  <img src="https://github.com/user-attachments/assets/ff4c6660-6265-40e1-b9be-91d36d7a69d7" width="450" alt="Open Dictation Demo showing Notch UI and instant text insertion">
 </div>
 
 ---
