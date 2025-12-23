@@ -1,6 +1,7 @@
 import SwiftUI
 import KeyboardShortcuts
 import Sparkle
+import LaunchAtLogin
 
 /// Main settings view for Open Dictation.
 /// Provides configuration for shortcut, transcription mode, language, and API settings.
@@ -57,6 +58,11 @@ struct SettingsView: View {
             // MARK: Shortcut Section
             Section {
                 KeyboardShortcuts.Recorder("Keyboard Shortcut", name: .toggleDictation)
+            }
+            
+            // MARK: General Settings Section
+            Section {
+                LaunchAtLogin.Toggle("Launch at Login")
             }
             
             // MARK: Transcription Mode Section
