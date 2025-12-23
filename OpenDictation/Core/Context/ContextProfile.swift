@@ -26,22 +26,13 @@ enum ContextProfile: Equatable {
       return "Hello, how are you doing today? I hope you're having a great day."
 
     case .code:
-      // Glossary format per OpenAI Whisper prompting guide.
-      // Whisper matches style/spelling, not instructions.
-      // 224 token limit - glossary packs more terms efficiently.
-      // swiftlint:disable:next line_length
+      // Natural sentence with tech vocabulary for style emulation.
+      // Whisper emulates STYLE, not instructions - use real sentences.
+      // Pattern from VoiceInk: natural language that demonstrates the style.
       return """
-        Glossary: shadcn, MCP, SDK, API, tRPC, RAG, LLM, CLI,
-        git pull, git push, git commit, git merge, git rebase, git stash, git diff,
-        npm, pnpm, bun, yarn, npx, pip, poetry, uv,
-        zod, prisma, drizzle, tanstack, vitest, playwright,
-        NextJS, Vercel, Supabase, Firebase, Cloudflare, Netlify,
-        LangChain, LlamaIndex, OpenAI, Anthropic, Ollama, Gemini, Claude,
-        useEffect, useState, useCallback, useMemo, async await,
-        TypeScript, JavaScript, Python, Swift, Rust, Go,
-        tailwind, vite, remix, astro, nuxt, svelte,
-        kubectl, terraform, docker, nginx, redis, postgres,
-        localhost, env, dotenv, JSON, YAML, GraphQL, REST
+        I'm working on TypeScript and Python code with React, NextJS, Supabase, \
+        and Vercel. I'll run git pull, git push, use npm and bun, and work with \
+        the API, SDK, and CLI. Let me check the useEffect and useState hooks.
         """
     }
   }
