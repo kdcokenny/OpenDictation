@@ -17,6 +17,9 @@ on:
       - '.github/workflows/test.yml'
       - 'project.yml'
 
+env:
+  WHISPER_VERSION: "1.8.2"
+
 jobs:
   test:
     name: Unit Tests
@@ -34,7 +37,7 @@ jobs:
           xcode-version: latest-stable
 
       - name: Install Tools
-        run: brew install xcodegen xcpretty
+        run: brew install xcodegen xcbeautify
 
       - name: Generate Xcode Project
         run: xcodegen generate
@@ -43,10 +46,10 @@ jobs:
         run: |
           mkdir -p deps/whisper.cpp
           curl -L -o whisper-xcframework.zip \
-            "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.2/whisper-v1.8.2-xcframework.zip"
+            "https://github.com/ggml-org/whisper.cpp/releases/download/v$WHISPER_VERSION/whisper-v$WHISPER_VERSION-xcframework.zip"
           unzip -q whisper-xcframework.zip -d deps/whisper.cpp
           rm whisper-xcframework.zip
-          echo "Downloaded whisper.cpp v1.8.2 xcframework"
+          echo "Downloaded whisper.cpp v$WHISPER_VERSION xcframework"
 
       - name: Run Tests
         run: |
@@ -55,16 +58,17 @@ jobs:
             -project OpenDictation.xcodeproj \
             -scheme OpenDictationTests \
             -destination 'platform=macOS' \
+            -resultBundlePath TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            | xcpretty --color --report junit
+            | xcbeautify --renderer github-actions
 
       - name: Upload Test Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: build/reports/
+          path: TestResults.xcresult
           if-no-files-found: warn
           retention-days: 7
