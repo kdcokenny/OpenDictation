@@ -43,6 +43,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - NSApplicationDelegate
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Skip all app setup when running unit tests (prevents permission pop-ups, status bar icons, etc.)
+        if AppEnvironment.isRunningTests {
+            return
+        }
+        
         // MARK: - Accessibility Permission Check
         // Check accessibility FIRST - before any other setup.
         // This prevents the escape key bug by ensuring event taps can be created.

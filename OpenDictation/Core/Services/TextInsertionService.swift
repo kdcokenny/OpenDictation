@@ -23,6 +23,7 @@ import os.log
 final class TextInsertionService {
     
     private let logger = Logger(subsystem: "com.opendictation", category: "TextInsertionService")
+    private let accessibilityChecker: AccessibilityChecker
     
     // MARK: - Concurrency Control
     
@@ -43,6 +44,12 @@ final class TextInsertionService {
     /// Saved pasteboard contents for restoration
     private struct SavedPasteboardContents {
         let items: [[NSPasteboard.PasteboardType: Data]]
+    }
+    
+    // MARK: - Lifecycle
+    
+    init(accessibilityChecker: AccessibilityChecker = SystemAccessibilityChecker()) {
+        self.accessibilityChecker = accessibilityChecker
     }
     
     // MARK: - Public API
@@ -75,7 +82,7 @@ final class TextInsertionService {
         
         // 1. Guard: Check Accessibility Permissions
         // CGEvent requires AXIsProcessTrusted to post events to other apps.
-        guard AXIsProcessTrusted() else {
+        guard accessibilityChecker.isAccessibilityGranted else {
             logger.warning("Accessibility permission missing - falling back to clipboard copy")
             pasteboard.clearContents()
             pasteboard.setString(text, forType: .string)

@@ -109,3 +109,18 @@ targets:
           fi
         basedOnDependencyAnalysis: false
     postBuildScripts: []
+
+  OpenDictationTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: OpenDictationTests
+    dependencies:
+      - target: OpenDictation
+      - package: Defaults
+      - package: KeyboardShortcuts
+    settings:
+      PRODUCT_NAME: OpenDictationTests
+      PRODUCT_MODULE_NAME: OpenDictationTests
+      PRODUCT_BUNDLE_IDENTIFIER: com.opendictation.OpenDictationTests
+

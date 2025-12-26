@@ -51,12 +51,16 @@ final class ModelManager: ObservableObject {
     
     // MARK: - Initialization
     
-    private init() {
-        // Set up models directory in Application Support
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        modelsDirectory = appSupport
-            .appendingPathComponent("com.opendictation", isDirectory: true)
-            .appendingPathComponent("Models", isDirectory: true)
+    internal init(modelsDirectory: URL? = nil) {
+        if let customDir = modelsDirectory {
+            self.modelsDirectory = customDir
+        } else {
+            // Set up models directory in Application Support
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            self.modelsDirectory = appSupport
+                .appendingPathComponent("com.opendictation", isDirectory: true)
+                .appendingPathComponent("Models", isDirectory: true)
+        }
         
         // Load selected model from UserDefaults
         selectedModelName = UserDefaults.standard.string(forKey: "selectedLocalModel")
@@ -79,7 +83,7 @@ final class ModelManager: ObservableObject {
     /// Validates that the selected model file actually exists on disk.
     /// If not, falls back to the bundled model to ensure dictation always works.
     /// Apple philosophy: default state should always be functional.
-    private func validateSelectedModelExists() {
+    internal func validateSelectedModelExists() {
         let selectedPath = modelsDirectory.appendingPathComponent("\(selectedModelName).bin").path
         
         // If selected model exists, we're good

@@ -11,7 +11,7 @@ MODELS_DIR := OpenDictation/Resources/Models
 TINY_URL := https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
 SILERO_VAD_URL := https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
 
-.PHONY: all clean whisper models setup build check help dev reset release dmg run-release run lint lint-fix lsp
+.PHONY: all clean whisper models setup build check help dev reset release dmg run-release run lint lint-fix lsp test
 
 # Default target
 all: check setup build
@@ -96,6 +96,15 @@ build:
 		build
 	@echo ""
 	@echo "Debug build complete!"
+ 
+# Run tests (depends on setup to ensure .xcodeproj is up to date)
+test: setup
+	@echo "Running tests..."
+	@xcodebuild -project OpenDictation.xcodeproj \
+		-scheme OpenDictationTests \
+		-destination 'platform=macOS' \
+		test
+
 
 # Run the app (debug build)
 run:
