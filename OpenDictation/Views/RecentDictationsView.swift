@@ -79,7 +79,7 @@ private struct RecentDictationRow: View {
 
                 Spacer()
 
-                statusLabel
+                statusView
             }
 
             Text(summaryText)
@@ -112,10 +112,22 @@ private struct RecentDictationRow: View {
         .padding(16)
     }
 
-    private var statusLabel: some View {
-        Text(statusText)
+    @ViewBuilder
+    private var statusView: some View {
+        if isRetrying {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+                Text("Processing")
+            }
             .font(.caption)
-            .foregroundColor(statusColor)
+            .foregroundColor(.secondary)
+        } else {
+            Text(statusText)
+                .font(.caption)
+                .foregroundColor(statusColor)
+        }
     }
 
     private var hasTranscript: Bool {
@@ -134,7 +146,7 @@ private struct RecentDictationRow: View {
         case .pending:
             return "Transcription is pending."
         case .retrying:
-            return "Retrying transcription..."
+            return "Saved audio is being transcribed."
         case .succeeded(let text):
             return text
         case .empty:
@@ -149,7 +161,7 @@ private struct RecentDictationRow: View {
         case .pending:
             return "Pending"
         case .retrying:
-            return "Retrying"
+            return "Processing"
         case .empty:
             return "Empty"
         case .failed:
