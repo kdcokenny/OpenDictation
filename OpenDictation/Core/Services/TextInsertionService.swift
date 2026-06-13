@@ -210,7 +210,9 @@ final class TextInsertionService {
             pasteboardItems.append(item)
         }
         
-        pasteboard.writeObjects(pasteboardItems)
+        if !pasteboard.writeObjects(pasteboardItems) {
+            logger.warning("Failed to restore clipboard contents.")
+        }
     }
     
     /// Simulates pressing Cmd+V to paste with explicit key events.

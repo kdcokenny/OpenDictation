@@ -163,6 +163,9 @@ final class TextInsertionTests: XCTestCase {
             return item
         }
 
-        pasteboard.writeObjects(pasteboardItems)
+        XCTAssertTrue(
+            pasteboard.writeObjects(pasteboardItems),
+            "Failed to restore pasteboard contents"
+        )
     }
 }

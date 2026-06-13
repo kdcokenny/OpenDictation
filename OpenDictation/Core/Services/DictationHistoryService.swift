@@ -21,6 +21,7 @@ struct DictationHistoryEntry: Identifiable, Equatable {
 
     let id: UUID
     let createdAt: Date
+    var expiresAt: Date
     let audioURL: URL?
     let context: ContextProfile
     var transcriptionStatus: TranscriptionStatus
@@ -41,6 +42,13 @@ struct DictationHistoryEntry: Identifiable, Equatable {
         case .succeeded, .empty, .failed:
             return false
         }
+    }
+
+    var isRetrying: Bool {
+        if case .retrying = transcriptionStatus {
+            return true
+        }
+        return false
     }
 
     var canRetry: Bool {
@@ -70,7 +78,13 @@ final class DictationHistoryService: ObservableObject {
     private let timeToLive: TimeInterval
     private let now: () -> Date
     private let transcribe: (URL, ContextProfile) async throws -> String
+    private let pasteboard: NSPasteboard
+    private let writePasteboardString: (NSPasteboard, String) -> Bool
     private var pruneTask: Task<Void, Never>?
+
+    private struct SavedPasteboardContents {
+        let items: [[NSPasteboard.PasteboardType: Data]]
+    }
 
     init(
         fileManager: FileManager = .default,
@@ -78,7 +92,9 @@ final class DictationHistoryService: ObservableObject {
         maxEntries: Int = Defaults.maxEntries,
         timeToLive: TimeInterval = Defaults.timeToLive,
         now: @escaping () -> Date = Date.init,
-        transcribe: ((URL, ContextProfile) async throws -> String)? = nil
+        transcribe: ((URL, ContextProfile) async throws -> String)? = nil,
+        pasteboard: NSPasteboard = .general,
+        writePasteboardString: ((NSPasteboard, String) -> Bool)? = nil
     ) {
         self.fileManager = fileManager
         self.cacheDirectory = cacheDirectory ?? fileManager
@@ -89,6 +105,10 @@ final class DictationHistoryService: ObservableObject {
         self.now = now
         self.transcribe = transcribe ?? {
             try await TranscriptionCoordinator.shared.transcribe(audioURL: $0, context: $1)
+        }
+        self.pasteboard = pasteboard
+        self.writePasteboardString = writePasteboardString ?? {
+            $0.setString($1, forType: .string)
         }
 
         ensureCacheDirectory()
@@ -104,10 +124,12 @@ final class DictationHistoryService: ObservableObject {
         pruneExpiredEntries()
 
         let id = UUID()
+        let createdAt = now()
         let retainedAudioURL = claimAudio(from: audioURL, id: id)
         let entry = DictationHistoryEntry(
             id: id,
-            createdAt: now(),
+            createdAt: createdAt,
+            expiresAt: createdAt.addingTimeInterval(timeToLive),
             audioURL: retainedAudioURL,
             context: context,
             transcriptionStatus: .pending,
@@ -123,6 +145,7 @@ final class DictationHistoryService: ObservableObject {
 
     func markRetrying(id: UUID) {
         updateEntry(id: id) { entry in
+            entry.expiresAt = now().addingTimeInterval(timeToLive)
             entry.transcriptionStatus = .retrying
             entry.deliveryStatus = .notAttempted
         }
@@ -131,7 +154,10 @@ final class DictationHistoryService: ObservableObject {
     func markTranscriptionSucceeded(id: UUID, text: String) {
         updateEntry(id: id) { entry in
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
+            entry.expiresAt = now().addingTimeInterval(timeToLive)
+            if trimmed.isEmpty {
+                entry.lastTranscript = nil
+            } else {
                 entry.lastTranscript = trimmed
             }
             entry.transcriptionStatus = trimmed.isEmpty ? .empty : .succeeded(trimmed)
@@ -140,6 +166,7 @@ final class DictationHistoryService: ObservableObject {
 
     func markTranscriptionFailed(id: UUID, message: String) {
         updateEntry(id: id) { entry in
+            entry.expiresAt = now().addingTimeInterval(timeToLive)
             entry.transcriptionStatus = .failed(message)
             entry.deliveryStatus = .notAttempted
         }
@@ -189,9 +216,15 @@ final class DictationHistoryService: ObservableObject {
             return false
         }
 
-        let pasteboard = NSPasteboard.general
+        let savedContents = savePasteboardContents(pasteboard)
         pasteboard.clearContents()
-        return pasteboard.setString(text, forType: .string)
+        guard writePasteboardString(pasteboard, text),
+              pasteboard.string(forType: .string) == text else {
+            restorePasteboardContents(savedContents, to: pasteboard)
+            return false
+        }
+
+        return true
     }
 
     func discardEntry(id: UUID) {
@@ -200,8 +233,10 @@ final class DictationHistoryService: ObservableObject {
     }
 
     func pruneExpiredEntries() {
-        let cutoff = now().addingTimeInterval(-timeToLive)
-        removeEntries { $0.createdAt <= cutoff }
+        let currentDate = now()
+        removeEntries { entry in
+            !entry.isRetrying && entry.expiresAt <= currentDate
+        }
         schedulePrune()
     }
 
@@ -273,6 +308,45 @@ final class DictationHistoryService: ObservableObject {
         }
     }
 
+    private func savePasteboardContents(_ pasteboard: NSPasteboard) -> SavedPasteboardContents {
+        var items: [[NSPasteboard.PasteboardType: Data]] = []
+
+        for item in pasteboard.pasteboardItems ?? [] {
+            var itemData: [NSPasteboard.PasteboardType: Data] = [:]
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    itemData[type] = data
+                }
+            }
+            if !itemData.isEmpty {
+                items.append(itemData)
+            }
+        }
+
+        return SavedPasteboardContents(items: items)
+    }
+
+    private func restorePasteboardContents(
+        _ saved: SavedPasteboardContents,
+        to pasteboard: NSPasteboard
+    ) {
+        pasteboard.clearContents()
+
+        guard !saved.items.isEmpty else { return }
+
+        let pasteboardItems = saved.items.map { itemData in
+            let item = NSPasteboardItem()
+            for (type, data) in itemData {
+                item.setData(data, forType: type)
+            }
+            return item
+        }
+
+        if !pasteboard.writeObjects(pasteboardItems) {
+            logger.warning("Failed to restore clipboard after Recent copy failure.")
+        }
+    }
+
     private func ensureCacheDirectory() {
         guard !fileManager.fileExists(atPath: cacheDirectory.path) else { return }
 
@@ -290,7 +364,8 @@ final class DictationHistoryService: ObservableObject {
         pruneTask?.cancel()
 
         guard let nextExpiration = entries
-            .map({ $0.createdAt.addingTimeInterval(timeToLive) })
+            .filter({ !$0.isRetrying })
+            .map(\.expiresAt)
             .min() else {
             pruneTask = nil
             return

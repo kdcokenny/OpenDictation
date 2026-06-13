@@ -143,6 +143,46 @@ final class DictationHistoryServiceTests: XCTestCase {
         XCTAssertEqual(sut.entries.first?.deliveryStatus, .notAttempted)
     }
 
+    func testEmptyRetryClearsLastTranscript() async throws {
+        // Given
+        let sut = makeService { _, _ in
+            " "
+        }
+        let id = sut.createEntry(audioURL: try makeAudioFile(), context: .prose)
+        sut.markTranscriptionSucceeded(id: id, text: "Old transcript")
+
+        // When
+        await sut.retryTranscription(id: id)
+
+        // Then
+        XCTAssertEqual(sut.entries.first?.transcriptionStatus, .empty)
+        XCTAssertNil(sut.entries.first?.transcript)
+    }
+
+    func testRetryingEntryIsNotPrunedWhileTranscriptionIsRunning() async throws {
+        // Given
+        let sut = makeService(timeToLive: 60) { _, _ in
+            try await Task.sleep(nanoseconds: 100_000_000)
+            return "Regenerated transcript"
+        }
+        let id = sut.createEntry(audioURL: try makeAudioFile(), context: .prose)
+        sut.markTranscriptionFailed(id: id, message: "Previous failure")
+        now = now.addingTimeInterval(59)
+
+        // When
+        let retryTask = Task {
+            await sut.retryTranscription(id: id)
+        }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        now = now.addingTimeInterval(61)
+        sut.pruneExpiredEntries()
+
+        // Then
+        XCTAssertEqual(sut.entries.first?.transcriptionStatus, .retrying)
+        await retryTask.value
+        XCTAssertEqual(sut.entries.first?.transcriptionStatus, .succeeded("Regenerated transcript"))
+    }
+
     func testPendingEntryCannotStartSecondRetry() async throws {
         // Given
         var retryCount = 0
@@ -213,6 +253,27 @@ final class DictationHistoryServiceTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "Existing clipboard")
     }
 
+    func testCopyTranscriptRestoresClipboardWhenPasteboardWriteFails() throws {
+        // Given
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString("Existing clipboard", forType: .string)
+
+        let sut = makeService { pasteboard, _ in
+            pasteboard.clearContents()
+            return false
+        }
+        let id = sut.createEntry(audioURL: try makeAudioFile(), context: .prose)
+        sut.markTranscriptionSucceeded(id: id, text: "Copy me")
+
+        // When
+        let didCopy = sut.copyTranscript(id: id)
+
+        // Then
+        XCTAssertFalse(didCopy)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Existing clipboard")
+    }
+
     func testDiscardEntryDeletesAudio() throws {
         // Given
         let sut = makeService()
@@ -238,6 +299,17 @@ final class DictationHistoryServiceTests: XCTestCase {
             timeToLive: timeToLive,
             now: { self.now },
             transcribe: transcribe
+        )
+    }
+
+    private func makeService(
+        writePasteboardString: @escaping (NSPasteboard, String) -> Bool
+    ) -> DictationHistoryService {
+        DictationHistoryService(
+            cacheDirectory: tempDirectory.appendingPathComponent("cache", isDirectory: true),
+            now: { self.now },
+            transcribe: { _, _ in "" },
+            writePasteboardString: writePasteboardString
         )
     }
 
@@ -290,6 +362,9 @@ final class DictationHistoryServiceTests: XCTestCase {
             return item
         }
 
-        pasteboard.writeObjects(pasteboardItems)
+        XCTAssertTrue(
+            pasteboard.writeObjects(pasteboardItems),
+            "Failed to restore pasteboard contents"
+        )
     }
 }
