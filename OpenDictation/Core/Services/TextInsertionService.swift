@@ -3,6 +3,13 @@ import ApplicationServices
 import Carbon.HIToolbox
 import os.log
 
+/// Result of attempting to deliver transcribed text to the user.
+enum TextDeliveryResult: Equatable {
+    case inserted
+    case copiedOnly
+    case failed(String)
+}
+
 /// Service for inserting text into the focused application via Universal Paste.
 ///
 /// Implements the "Always Paste" strategy with Apple-quality hardening:
@@ -57,15 +64,15 @@ final class TextInsertionService {
     /// Inserts text using the universal paste method.
     ///
     /// - Parameter text: The text to insert.
-    /// - Returns: `true` if text was sent to clipboard and paste was attempted.
-    func insertText(_ text: String) -> Bool {
+    /// - Returns: A delivery result describing whether text was pasted, copied, or failed.
+    func insertText(_ text: String) -> TextDeliveryResult {
         // Acquire lock and check for concurrent operation
         Self.insertionLock.lock()
         
         guard !Self.isInserting else {
             Self.insertionLock.unlock()
             logger.warning("Paste operation already in progress, rejecting concurrent call")
-            return false
+            return .failed("Paste operation already in progress.")
         }
         
         Self.isInserting = true
@@ -86,7 +93,7 @@ final class TextInsertionService {
             logger.warning("Accessibility permission missing - falling back to clipboard copy")
             pasteboard.clearContents()
             pasteboard.setString(text, forType: .string)
-            return false // Indicates fallback to clipboard-only (no paste attempted)
+            return .copiedOnly
         }
         
         // 2. Save previous clipboard contents (all types)
@@ -135,14 +142,14 @@ final class TextInsertionService {
             self.pendingRestore = savedContents
             self.insertedText = text
             
-            return true
+            return .inserted
         } else {
             // 7. LOUD FAILURE: If we couldn't verify the write after all retries,
             // we restore the user's original clipboard content to maintain system consistency.
             // Returning false will trigger an error state (shake + sound) in the UI.
             logger.error("CRITICAL: Failed to verify clipboard content after \(maxAttempts) attempts. Aborting paste and restoring original clipboard.")
             restorePasteboardContents(savedContents, to: pasteboard)
-            return false
+            return .failed("Failed to verify clipboard content.")
         }
     }
     

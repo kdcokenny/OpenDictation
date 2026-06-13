@@ -48,7 +48,7 @@ final class DictationStateMachine: ObservableObject {
     @Published private(set) var state: DictationState = .idle
     
     /// The context profile captured at hotkey press (persists across states)
-    internal(set) var currentContext: ContextProfile = .prose
+    var currentContext: ContextProfile = .prose
     
     // MARK: - Mock Mode
     
@@ -74,8 +74,8 @@ final class DictationStateMachine: ObservableObject {
     /// Called when the panel should be hidden
     var onHidePanel: (() -> Void)?
     
-    /// Called when text should be inserted. Returns true if inserted, false if clipboard-only.
-    var onInsertText: ((String) -> Bool)?
+    /// Called when text should be delivered to the user.
+    var onInsertText: ((String) -> TextDeliveryResult)?
     
     // MARK: - Event Handling
     
@@ -197,14 +197,14 @@ final class DictationStateMachine: ObservableObject {
                 if isMockMode {
                     state = .success
                 } else {
-                    // Try to insert text, check if it was actually inserted or just clipboard
-                    let wasInserted = onInsertText?(trimmed) ?? false
-                    if wasInserted {
+                    let deliveryResult = onInsertText?(trimmed) ?? .failed("Text delivery unavailable.")
+                    switch deliveryResult {
+                    case .inserted:
                         state = .success
-                    } else {
-                        // Insertion failed (clipboard verification timeout or missing permissions)
-                        // Trigger error state for loud feedback (shake + sound)
-                        state = .error(message: "Failed to insert text. Please try again.")
+                    case .copiedOnly:
+                        state = .copiedToClipboard
+                    case .failed(let message):
+                        state = .error(message: message)
                     }
                 }
             }

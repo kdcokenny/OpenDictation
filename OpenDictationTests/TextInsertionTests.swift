@@ -76,7 +76,7 @@ final class TextInsertionTests: XCTestCase {
         let result = fallbackSut.insertText(newText)
         
         // Then
-        XCTAssertFalse(result, "Should return false when accessibility is missing")
+        XCTAssertEqual(result, .copiedOnly, "Should return copiedOnly when accessibility is missing")
         XCTAssertEqual(pasteboard.string(forType: .string), newText, "Should still set clipboard as fallback")
     }
     
