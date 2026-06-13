@@ -1,8 +1,9 @@
 import AppKit
+import Combine
 import Foundation
 import os.log
 
-/// A short-lived recovery record for one completed dictation attempt.
+/// A short-lived recovery record for one dictation attempt.
 struct DictationHistoryEntry: Identifiable, Equatable {
     enum TranscriptionStatus: Equatable {
         case pending
@@ -42,13 +43,6 @@ struct DictationHistoryEntry: Identifiable, Equatable {
         case .succeeded, .empty, .failed:
             return false
         }
-    }
-
-    var isRetrying: Bool {
-        if case .retrying = transcriptionStatus {
-            return true
-        }
-        return false
     }
 
     var canRetry: Bool {
@@ -235,7 +229,7 @@ final class DictationHistoryService: ObservableObject {
     func pruneExpiredEntries() {
         let currentDate = now()
         removeEntries { entry in
-            !entry.isRetrying && entry.expiresAt <= currentDate
+            !entry.isTranscribing && entry.expiresAt <= currentDate
         }
         schedulePrune()
     }
@@ -285,10 +279,14 @@ final class DictationHistoryService: ObservableObject {
     }
 
     private func pruneOverflowEntries() {
-        guard entries.count > maxEntries else { return }
-        let overflow = entries.suffix(entries.count - maxEntries)
-        overflow.forEach(deleteAudio)
-        entries.removeLast(entries.count - maxEntries)
+        while entries.count > maxEntries {
+            guard let index = entries.indices.reversed().first(where: { !entries[$0].isTranscribing }) else {
+                return
+            }
+
+            let removed = entries.remove(at: index)
+            deleteAudio(for: removed)
+        }
     }
 
     private func removeEntries(where shouldRemove: (DictationHistoryEntry) -> Bool) {
@@ -364,7 +362,7 @@ final class DictationHistoryService: ObservableObject {
         pruneTask?.cancel()
 
         guard let nextExpiration = entries
-            .filter({ !$0.isRetrying })
+            .filter({ !$0.isTranscribing })
             .map(\.expiresAt)
             .min() else {
             pruneTask = nil

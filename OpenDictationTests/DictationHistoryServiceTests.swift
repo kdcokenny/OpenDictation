@@ -51,6 +51,7 @@ final class DictationHistoryServiceTests: XCTestCase {
         let sut = makeService(maxEntries: 1)
         let firstID = sut.createEntry(audioURL: try makeAudioFile(name: "first.wav"), context: .prose)
         let firstAudioURL = try XCTUnwrap(sut.entries.first(where: { $0.id == firstID })?.audioURL)
+        sut.markTranscriptionSucceeded(id: firstID, text: "First transcript")
 
         // When
         let secondID = sut.createEntry(audioURL: try makeAudioFile(name: "second.wav"), context: .code)
@@ -60,11 +61,33 @@ final class DictationHistoryServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: firstAudioURL.path))
     }
 
-    func testTTLPrunesExpiredEntryAndDeletesAudio() throws {
+    func testMaxCountSkipsTranscribingEntryWhenPruningOverflow() throws {
+        // Given
+        let sut = makeService(maxEntries: 2)
+        let retryingID = sut.createEntry(audioURL: try makeAudioFile(name: "retrying.wav"), context: .prose)
+        let retryingAudioURL = try XCTUnwrap(sut.entries.first(where: { $0.id == retryingID })?.audioURL)
+        sut.markTranscriptionFailed(id: retryingID, message: "Previous failure")
+        sut.markRetrying(id: retryingID)
+
+        let terminalID = sut.createEntry(audioURL: try makeAudioFile(name: "terminal.wav"), context: .code)
+        let terminalAudioURL = try XCTUnwrap(sut.entries.first(where: { $0.id == terminalID })?.audioURL)
+        sut.markTranscriptionSucceeded(id: terminalID, text: "Terminal transcript")
+
+        // When
+        let pendingID = sut.createEntry(audioURL: try makeAudioFile(name: "pending.wav"), context: .prose)
+
+        // Then
+        XCTAssertEqual(sut.entries.map(\.id), [pendingID, retryingID])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: retryingAudioURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: terminalAudioURL.path))
+    }
+
+    func testTTLPrunesExpiredTerminalEntryAndDeletesAudio() throws {
         // Given
         let sut = makeService(timeToLive: 60)
         let id = sut.createEntry(audioURL: try makeAudioFile(), context: .prose)
         let retainedAudioURL = try XCTUnwrap(sut.entries.first(where: { $0.id == id })?.audioURL)
+        sut.markTranscriptionSucceeded(id: id, text: "Finished transcript")
 
         // When
         now = now.addingTimeInterval(61)
@@ -75,11 +98,12 @@ final class DictationHistoryServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: retainedAudioURL.path))
     }
 
-    func testTTLPrunesEntryWhileServiceIsIdle() async throws {
+    func testTTLPrunesTerminalEntryWhileServiceIsIdle() async throws {
         // Given
         let sut = makeLiveService(timeToLive: 0.05)
         let id = sut.createEntry(audioURL: try makeAudioFile(), context: .prose)
         let retainedAudioURL = try XCTUnwrap(sut.entries.first(where: { $0.id == id })?.audioURL)
+        sut.markTranscriptionSucceeded(id: id, text: "Finished transcript")
 
         // When
         try await Task.sleep(nanoseconds: 150_000_000)
@@ -87,6 +111,22 @@ final class DictationHistoryServiceTests: XCTestCase {
         // Then
         XCTAssertTrue(sut.entries.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: retainedAudioURL.path))
+    }
+
+    func testPendingEntryIsNotPrunedWhileTranscriptionIsRunning() throws {
+        // Given
+        let sut = makeService(timeToLive: 60)
+        let id = sut.createEntry(audioURL: try makeAudioFile(), context: .prose)
+        let retainedAudioURL = try XCTUnwrap(sut.entries.first(where: { $0.id == id })?.audioURL)
+
+        // When
+        now = now.addingTimeInterval(61)
+        sut.pruneExpiredEntries()
+
+        // Then
+        XCTAssertEqual(sut.entries.first?.id, id)
+        XCTAssertEqual(sut.entries.first?.transcriptionStatus, .pending)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: retainedAudioURL.path))
     }
 
     func testRetryFailureUpdatesEntry() async throws {
