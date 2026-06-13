@@ -135,7 +135,10 @@ private struct RecentDictationRow: View {
     }
 
     private var isRetrying: Bool {
-        entry.isTranscribing
+        if case .retrying = entry.transcriptionStatus {
+            return true
+        }
+        return false
     }
 
     private var summaryText: String {

@@ -7,23 +7,27 @@ final class DictationHistoryServiceTests: XCTestCase {
 
     private var tempDirectory: URL!
     private var now: Date!
+    private var pasteboardSnapshot: [[NSPasteboard.PasteboardType: Data]] = []
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
+        pasteboardSnapshot = savePasteboardContents(NSPasteboard.general)
         tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DictationHistoryServiceTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         now = Date(timeIntervalSince1970: 1_000)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         if let tempDirectory,
            FileManager.default.fileExists(atPath: tempDirectory.path) {
             try FileManager.default.removeItem(at: tempDirectory)
         }
         tempDirectory = nil
         now = nil
-        try super.tearDownWithError()
+        restorePasteboardContents(pasteboardSnapshot, to: NSPasteboard.general)
+        pasteboardSnapshot = []
+        try await super.tearDown()
     }
 
     func testCreateEntryClaimsAudio() throws {
@@ -248,5 +252,44 @@ final class DictationHistoryServiceTests: XCTestCase {
         let url = tempDirectory.appendingPathComponent("\(UUID().uuidString)-\(name)")
         try Data([0, 1, 2, 3]).write(to: url)
         return url
+    }
+
+    private func savePasteboardContents(
+        _ pasteboard: NSPasteboard
+    ) -> [[NSPasteboard.PasteboardType: Data]] {
+        var items: [[NSPasteboard.PasteboardType: Data]] = []
+
+        for item in pasteboard.pasteboardItems ?? [] {
+            var itemData: [NSPasteboard.PasteboardType: Data] = [:]
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    itemData[type] = data
+                }
+            }
+            if !itemData.isEmpty {
+                items.append(itemData)
+            }
+        }
+
+        return items
+    }
+
+    private func restorePasteboardContents(
+        _ savedItems: [[NSPasteboard.PasteboardType: Data]],
+        to pasteboard: NSPasteboard
+    ) {
+        pasteboard.clearContents()
+
+        guard !savedItems.isEmpty else { return }
+
+        let pasteboardItems = savedItems.map { itemData in
+            let item = NSPasteboardItem()
+            for (type, data) in itemData {
+                item.setData(data, forType: type)
+            }
+            return item
+        }
+
+        pasteboard.writeObjects(pasteboardItems)
     }
 }
