@@ -103,7 +103,7 @@ private struct RecentDictationRow: View {
                 } label: {
                     Label("Retry", systemImage: "arrow.clockwise")
                 }
-                .disabled(!entry.canRetry || isRetrying)
+                .disabled(!entry.canRetry)
 
                 Spacer()
             }
@@ -135,13 +135,15 @@ private struct RecentDictationRow: View {
     }
 
     private var isRetrying: Bool {
-        if case .retrying = entry.transcriptionStatus {
-            return true
-        }
-        return false
+        entry.isTranscribing
     }
 
     private var summaryText: String {
+        if let transcript = entry.transcript,
+           !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return transcript
+        }
+
         switch entry.transcriptionStatus {
         case .pending:
             return "Transcription is pending."

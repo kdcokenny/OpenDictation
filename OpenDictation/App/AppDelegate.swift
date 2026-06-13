@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var recentWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
     private var activeHistoryEntryID: UUID?
+    private var currentHistoryEntryID: UUID?
     
     /// Active transcription task (for cancellation support)
     private var transcriptionTask: Task<Void, Never>?
@@ -372,6 +373,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Cancel any in-progress transcription
             self?.transcriptionTask?.cancel()
             self?.transcriptionTask = nil
+            self?.discardCurrentHistoryEntry()
             
             // Stop recording if active
             self?.recordingService?.stopRecording()
@@ -425,6 +427,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 audioURL: audioURL,
                 context: context
             )
+            self.currentHistoryEntryID = historyEntryID
 
             self.logger.debug("Recording stopped, starting transcription...")
             
@@ -456,6 +459,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                 id: historyEntryID,
                                 text: text
                             )
+                            self?.currentHistoryEntryID = nil
                             self?.activeHistoryEntryID = historyEntryID
                         }
                         stateMachine?.send(.transcriptionCompleted(text: text))
@@ -472,6 +476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                 id: historyEntryID,
                                 message: error.localizedDescription
                             )
+                            self?.currentHistoryEntryID = nil
                         }
                         stateMachine?.send(.transcriptionFailed(error: error.localizedDescription))
                     }
@@ -593,6 +598,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Cancel any in-progress transcription
             transcriptionTask?.cancel()
             transcriptionTask = nil
+            discardCurrentHistoryEntry()
             
             // Stop recording if active
             recordingService?.stopRecording()
@@ -651,6 +657,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         playSound(service)
         DispatchQueue.main.asyncAfter(deadline: .now() + Timing.volumeRestoreDelay) { [weak self] in
             self?.audioFeedbackService?.restoreVolume()
+        }
+    }
+
+    private func discardCurrentHistoryEntry() {
+        if let entryID = currentHistoryEntryID {
+            dictationHistoryService?.discardEntry(id: entryID)
+            currentHistoryEntryID = nil
+        }
+
+        if let entryID = activeHistoryEntryID {
+            dictationHistoryService?.discardEntry(id: entryID)
+            activeHistoryEntryID = nil
         }
     }
     
@@ -744,7 +762,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         // Switch back to accessory mode (menu bar only, no Dock icon)
         DispatchQueue.main.async {
-            NSApp.setActivationPolicy(.accessory)
+            if self.settingsWindow == nil && self.recentWindow == nil {
+                NSApp.setActivationPolicy(.accessory)
+            }
         }
     }
     

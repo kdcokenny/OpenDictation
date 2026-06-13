@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 @testable import OpenDictation
 
 @MainActor
@@ -70,11 +71,26 @@ final class DictationHistoryServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: retainedAudioURL.path))
     }
 
+    func testTTLPrunesEntryWhileServiceIsIdle() async throws {
+        // Given
+        let sut = makeLiveService(timeToLive: 0.05)
+        let id = sut.createEntry(audioURL: try makeAudioFile(), context: .prose)
+        let retainedAudioURL = try XCTUnwrap(sut.entries.first(where: { $0.id == id })?.audioURL)
+
+        // When
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        // Then
+        XCTAssertTrue(sut.entries.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: retainedAudioURL.path))
+    }
+
     func testRetryFailureUpdatesEntry() async throws {
         // Given
         let sut = makeService(timeToLive: 60)
         let id = sut.createEntry(audioURL: try makeAudioFile(), context: .prose)
         let retainedAudioURL = try XCTUnwrap(sut.entries.first?.audioURL)
+        sut.markTranscriptionFailed(id: id, message: "Previous failure")
         try FileManager.default.removeItem(at: retainedAudioURL)
 
         // When
@@ -101,6 +117,43 @@ final class DictationHistoryServiceTests: XCTestCase {
         // Then
         XCTAssertEqual(sut.entries.first?.transcriptionStatus, .succeeded("Regenerated transcript"))
         XCTAssertEqual(sut.entries.first?.deliveryStatus, .notAttempted)
+    }
+
+    func testRetryFailurePreservesLastTranscript() async throws {
+        // Given
+        let sut = makeService { _, _ in
+            throw NSError(domain: "DictationHistoryServiceTests", code: 2)
+        }
+        let id = sut.createEntry(audioURL: try makeAudioFile(), context: .prose)
+        sut.markTranscriptionSucceeded(id: id, text: " Original transcript ")
+
+        // When
+        await sut.retryTranscription(id: id)
+
+        // Then
+        guard case .failed(let message) = sut.entries.first?.transcriptionStatus else {
+            return XCTFail("Expected retry failure")
+        }
+        XCTAssertFalse(message.isEmpty)
+        XCTAssertEqual(sut.entries.first?.transcript, "Original transcript")
+        XCTAssertEqual(sut.entries.first?.deliveryStatus, .notAttempted)
+    }
+
+    func testPendingEntryCannotStartSecondRetry() async throws {
+        // Given
+        var retryCount = 0
+        let sut = makeService { _, _ in
+            retryCount += 1
+            return "Unexpected"
+        }
+        let id = sut.createEntry(audioURL: try makeAudioFile(), context: .prose)
+
+        // When
+        await sut.retryTranscription(id: id)
+
+        // Then
+        XCTAssertEqual(retryCount, 0)
+        XCTAssertEqual(sut.entries.first?.transcriptionStatus, .pending)
     }
 
     func testRetryUpdatesEmptyEntryToFailed() async throws {
@@ -134,6 +187,42 @@ final class DictationHistoryServiceTests: XCTestCase {
         XCTAssertEqual(sut.entries.first?.deliveryStatus, .copiedOnly)
     }
 
+    func testCopyTranscriptPrunesExpiredEntryAndDeletesAudio() throws {
+        // Given
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString("Existing clipboard", forType: .string)
+
+        let sut = makeService(timeToLive: 60)
+        let id = sut.createEntry(audioURL: try makeAudioFile(), context: .prose)
+        let retainedAudioURL = try XCTUnwrap(sut.entries.first?.audioURL)
+        sut.markTranscriptionSucceeded(id: id, text: "Copy me")
+
+        // When
+        now = now.addingTimeInterval(61)
+        let didCopy = sut.copyTranscript(id: id)
+
+        // Then
+        XCTAssertFalse(didCopy)
+        XCTAssertTrue(sut.entries.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: retainedAudioURL.path))
+        XCTAssertEqual(pasteboard.string(forType: .string), "Existing clipboard")
+    }
+
+    func testDiscardEntryDeletesAudio() throws {
+        // Given
+        let sut = makeService()
+        let id = sut.createEntry(audioURL: try makeAudioFile(), context: .prose)
+        let retainedAudioURL = try XCTUnwrap(sut.entries.first?.audioURL)
+
+        // When
+        sut.discardEntry(id: id)
+
+        // Then
+        XCTAssertTrue(sut.entries.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: retainedAudioURL.path))
+    }
+
     private func makeService(
         maxEntries: Int = 10,
         timeToLive: TimeInterval = 30 * 60,
@@ -145,6 +234,13 @@ final class DictationHistoryServiceTests: XCTestCase {
             timeToLive: timeToLive,
             now: { self.now },
             transcribe: transcribe
+        )
+    }
+
+    private func makeLiveService(timeToLive: TimeInterval) -> DictationHistoryService {
+        DictationHistoryService(
+            cacheDirectory: tempDirectory.appendingPathComponent("live-cache", isDirectory: true),
+            timeToLive: timeToLive
         )
     }
 

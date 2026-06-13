@@ -25,13 +25,26 @@ struct DictationHistoryEntry: Identifiable, Equatable {
     let context: ContextProfile
     var transcriptionStatus: TranscriptionStatus
     var deliveryStatus: DeliveryStatus
+    var lastTranscript: String?
 
     var transcript: String? {
-        guard case .succeeded(let text) = transcriptionStatus else { return nil }
-        return text
+        if case .succeeded(let text) = transcriptionStatus {
+            return text
+        }
+        return lastTranscript
+    }
+
+    var isTranscribing: Bool {
+        switch transcriptionStatus {
+        case .pending, .retrying:
+            return true
+        case .succeeded, .empty, .failed:
+            return false
+        }
     }
 
     var canRetry: Bool {
+        guard !isTranscribing else { return false }
         guard let audioURL else { return false }
         return FileManager.default.fileExists(atPath: audioURL.path)
     }
@@ -57,6 +70,7 @@ final class DictationHistoryService: ObservableObject {
     private let timeToLive: TimeInterval
     private let now: () -> Date
     private let transcribe: (URL, ContextProfile) async throws -> String
+    private var pruneTask: Task<Void, Never>?
 
     init(
         fileManager: FileManager = .default,
@@ -81,6 +95,10 @@ final class DictationHistoryService: ObservableObject {
         cleanupRetainedAudio()
     }
 
+    deinit {
+        pruneTask?.cancel()
+    }
+
     /// Creates a history entry and claims the recorder temp file for retry.
     func createEntry(audioURL: URL, context: ContextProfile) -> UUID {
         pruneExpiredEntries()
@@ -93,11 +111,13 @@ final class DictationHistoryService: ObservableObject {
             audioURL: retainedAudioURL,
             context: context,
             transcriptionStatus: .pending,
-            deliveryStatus: .notAttempted
+            deliveryStatus: .notAttempted,
+            lastTranscript: nil
         )
 
         entries.insert(entry, at: 0)
         pruneOverflowEntries()
+        schedulePrune()
         return id
     }
 
@@ -111,6 +131,9 @@ final class DictationHistoryService: ObservableObject {
     func markTranscriptionSucceeded(id: UUID, text: String) {
         updateEntry(id: id) { entry in
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                entry.lastTranscript = trimmed
+            }
             entry.transcriptionStatus = trimmed.isEmpty ? .empty : .succeeded(trimmed)
         }
     }
@@ -138,8 +161,10 @@ final class DictationHistoryService: ObservableObject {
     func retryTranscription(id: UUID) async {
         pruneExpiredEntries()
 
-        guard let entry = entries.first(where: { $0.id == id }),
-              let audioURL = entry.audioURL,
+        guard let entry = entries.first(where: { $0.id == id }) else { return }
+        guard !entry.isTranscribing else { return }
+
+        guard let audioURL = entry.audioURL,
               fileManager.fileExists(atPath: audioURL.path) else {
             markTranscriptionFailed(id: id, message: "Audio is no longer available.")
             return
@@ -155,20 +180,29 @@ final class DictationHistoryService: ObservableObject {
         }
     }
 
-    func copyTranscript(id: UUID) {
+    @discardableResult
+    func copyTranscript(id: UUID) -> Bool {
+        pruneExpiredEntries()
+
         guard let text = entries.first(where: { $0.id == id })?.transcript,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return
+            return false
         }
 
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        return pasteboard.setString(text, forType: .string)
+    }
+
+    func discardEntry(id: UUID) {
+        removeEntries { $0.id == id }
+        schedulePrune()
     }
 
     func pruneExpiredEntries() {
         let cutoff = now().addingTimeInterval(-timeToLive)
-        removeEntries { $0.createdAt < cutoff }
+        removeEntries { $0.createdAt <= cutoff }
+        schedulePrune()
     }
 
     func cleanupRetainedAudio() {
@@ -185,6 +219,7 @@ final class DictationHistoryService: ObservableObject {
         } catch {
             logger.warning("Failed to clean recent audio cache: \(error.localizedDescription)")
         }
+        schedulePrune()
     }
 
     private func updateEntry(id: UUID, update: (inout DictationHistoryEntry) -> Void) {
@@ -192,6 +227,7 @@ final class DictationHistoryService: ObservableObject {
 
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
         update(&entries[index])
+        schedulePrune()
     }
 
     private func claimAudio(from sourceURL: URL, id: UUID) -> URL? {
@@ -247,6 +283,29 @@ final class DictationHistoryService: ObservableObject {
             )
         } catch {
             logger.warning("Failed to create recent audio cache: \(error.localizedDescription)")
+        }
+    }
+
+    private func schedulePrune() {
+        pruneTask?.cancel()
+
+        guard let nextExpiration = entries
+            .map({ $0.createdAt.addingTimeInterval(timeToLive) })
+            .min() else {
+            pruneTask = nil
+            return
+        }
+
+        let delay = max(0, nextExpiration.timeIntervalSince(now()))
+        pruneTask = Task { [weak self] in
+            let nanoseconds = UInt64(delay * 1_000_000_000)
+            if nanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: nanoseconds)
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.pruneExpiredEntries()
+            }
         }
     }
 }

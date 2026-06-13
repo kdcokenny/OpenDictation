@@ -10,7 +10,10 @@ final class TextInsertionTests: XCTestCase {
     
     override func setUp() {
         super.setUp()
-        sut = TextInsertionService(accessibilityChecker: MockAccessibilityChecker(isGranted: true))
+        sut = TextInsertionService(
+            accessibilityChecker: MockAccessibilityChecker(isGranted: true),
+            pasteSimulator: { true }
+        )
         pasteboard.clearContents()
     }
     
@@ -78,6 +81,23 @@ final class TextInsertionTests: XCTestCase {
         // Then
         XCTAssertEqual(result, .copiedOnly, "Should return copiedOnly when accessibility is missing")
         XCTAssertEqual(pasteboard.string(forType: .string), newText, "Should still set clipboard as fallback")
+    }
+
+    func testReportsFailureWhenPasteSimulationFails() {
+        // Given
+        let failingSut = TextInsertionService(
+            accessibilityChecker: MockAccessibilityChecker(isGranted: true),
+            pasteSimulator: { false }
+        )
+        pasteboard.clearContents()
+        pasteboard.setString("Original", forType: .string)
+
+        // When
+        let result = failingSut.insertText("New Text")
+
+        // Then
+        XCTAssertEqual(result, .failed("Failed to simulate paste."))
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original")
     }
     
     // MARK: - Verification Logic
