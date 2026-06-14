@@ -65,7 +65,7 @@ final class DictationStateMachineTests: XCTestCase {
         sut.onHidePanel = { hidePanelExpectation.fulfill() }
         
         // Mocking onInsertText to succeed
-        sut.onInsertText = { _ in true }
+        sut.onInsertText = { _ in .inserted }
         
         // When
         sut.send(.transcriptionCompleted(text: "Hello world"))
@@ -78,7 +78,7 @@ final class DictationStateMachineTests: XCTestCase {
     func testFastTranscriptionFlow() {
         // Given
         sut.send(.hotkeyPressed(context: .prose))
-        sut.onInsertText = { _ in true }
+        sut.onInsertText = { _ in .inserted }
         
         // When - Transcription finishes BEFORE .transcriptionStarted is even sent
         sut.send(.transcriptionCompleted(text: "Hello fast"))
@@ -130,7 +130,7 @@ final class DictationStateMachineTests: XCTestCase {
         for event in terminalEvents {
             sut = DictationStateMachine()
             sut.send(.hotkeyPressed(context: .prose))
-            sut.onInsertText = { _ in true }
+            sut.onInsertText = { _ in .inserted }
             sut.send(event)
             
             // Verify it's in a terminal state
@@ -186,10 +186,22 @@ final class DictationStateMachineTests: XCTestCase {
         sut.send(.hotkeyPressed(context: .prose))
         
         // When
-        sut.onInsertText = { _ in false } // Fail insertion
+        sut.onInsertText = { _ in .failed("Failed to insert text. Please try again.") }
         sut.send(.transcriptionCompleted(text: "Important text"))
         
         // Then
         XCTAssertEqual(sut.state, .error(message: "Failed to insert text. Please try again."))
+    }
+
+    func testCopiedOnlyDelivery() {
+        // Given
+        sut.send(.hotkeyPressed(context: .prose))
+
+        // When
+        sut.onInsertText = { _ in .copiedOnly }
+        sut.send(.transcriptionCompleted(text: "Important text"))
+
+        // Then
+        XCTAssertEqual(sut.state, .copiedToClipboard)
     }
 }

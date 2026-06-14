@@ -7,17 +7,23 @@ final class TextInsertionTests: XCTestCase {
     
     private var sut: TextInsertionService!
     private let pasteboard = NSPasteboard.general
+    private var pasteboardSnapshot: [[NSPasteboard.PasteboardType: Data]] = []
     
-    override func setUp() {
-        super.setUp()
-        sut = TextInsertionService(accessibilityChecker: MockAccessibilityChecker(isGranted: true))
+    override func setUp() async throws {
+        try await super.setUp()
+        pasteboardSnapshot = savePasteboardContents(pasteboard)
+        sut = TextInsertionService(
+            accessibilityChecker: MockAccessibilityChecker(isGranted: true),
+            pasteSimulator: { true }
+        )
         pasteboard.clearContents()
     }
     
-    override func tearDown() {
-        pasteboard.clearContents()
+    override func tearDown() async throws {
+        restorePasteboardContents(pasteboardSnapshot, to: pasteboard)
+        pasteboardSnapshot = []
         sut = nil
-        super.tearDown()
+        try await super.tearDown()
     }
     
     // MARK: - Clipboard Preservation
@@ -76,8 +82,25 @@ final class TextInsertionTests: XCTestCase {
         let result = fallbackSut.insertText(newText)
         
         // Then
-        XCTAssertFalse(result, "Should return false when accessibility is missing")
+        XCTAssertEqual(result, .copiedOnly, "Should return copiedOnly when accessibility is missing")
         XCTAssertEqual(pasteboard.string(forType: .string), newText, "Should still set clipboard as fallback")
+    }
+
+    func testReportsFailureWhenPasteSimulationFails() {
+        // Given
+        let failingSut = TextInsertionService(
+            accessibilityChecker: MockAccessibilityChecker(isGranted: true),
+            pasteSimulator: { false }
+        )
+        pasteboard.clearContents()
+        pasteboard.setString("Original", forType: .string)
+
+        // When
+        let result = failingSut.insertText("New Text")
+
+        // Then
+        XCTAssertEqual(result, .failed("Failed to simulate paste."))
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original")
     }
     
     // MARK: - Verification Logic
@@ -102,5 +125,47 @@ final class TextInsertionTests: XCTestCase {
         
         // Then - Should NOT restore original text because clipboard was modified
         XCTAssertEqual(pasteboard.string(forType: .string), "User Copied")
+    }
+
+    private func savePasteboardContents(
+        _ pasteboard: NSPasteboard
+    ) -> [[NSPasteboard.PasteboardType: Data]] {
+        var items: [[NSPasteboard.PasteboardType: Data]] = []
+
+        for item in pasteboard.pasteboardItems ?? [] {
+            var itemData: [NSPasteboard.PasteboardType: Data] = [:]
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    itemData[type] = data
+                }
+            }
+            if !itemData.isEmpty {
+                items.append(itemData)
+            }
+        }
+
+        return items
+    }
+
+    private func restorePasteboardContents(
+        _ savedItems: [[NSPasteboard.PasteboardType: Data]],
+        to pasteboard: NSPasteboard
+    ) {
+        pasteboard.clearContents()
+
+        guard !savedItems.isEmpty else { return }
+
+        let pasteboardItems = savedItems.map { itemData in
+            let item = NSPasteboardItem()
+            for (type, data) in itemData {
+                item.setData(data, forType: type)
+            }
+            return item
+        }
+
+        XCTAssertTrue(
+            pasteboard.writeObjects(pasteboardItems),
+            "Failed to restore pasteboard contents"
+        )
     }
 }

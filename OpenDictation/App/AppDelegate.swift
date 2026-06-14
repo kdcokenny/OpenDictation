@@ -27,12 +27,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var permissionsManager: PermissionsManager?
     private var notchPanel: NotchOverlayPanel?
     private var textInsertionService: TextInsertionService?
+    private var dictationHistoryService: DictationHistoryService?
     private var audioFeedbackService: AudioFeedbackService?
     private var hotkeyService: HotkeyService?
     private var recordingService: RecordingService?
     private var stateMachine: DictationStateMachine?
     private var settingsWindow: NSWindow?
+    private var recentWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
+    private var activeHistoryEntryID: UUID?
+    private var currentHistoryEntryID: UUID?
     
     /// Active transcription task (for cancellation support)
     private var transcriptionTask: Task<Void, Never>?
@@ -95,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         // Restore volume if still ducked (safety net)
         audioFeedbackService?.restoreVolume()
+        dictationHistoryService?.cleanupRetainedAudio()
         notchPanel?.hide()
     }
     
@@ -142,6 +147,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
+        let recentItem = NSMenuItem(
+            title: "Recent...",
+            action: #selector(openRecent),
+            keyEquivalent: ""
+        )
+        recentItem.target = self
+        menu.addItem(recentItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let settingsItem = NSMenuItem(
             title: "Settings…",
             action: #selector(openSettings),
@@ -171,6 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         
         textInsertionService = TextInsertionService()
+        dictationHistoryService = DictationHistoryService.shared
         audioFeedbackService = AudioFeedbackService()
         hotkeyService = HotkeyService()
         recordingService = RecordingService.shared
@@ -262,16 +278,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self = self,
-                  let sm = self.stateMachine,
-                  sm.state == .recording else { return }
-            
-            // Update state machine (source of truth)
-            let context = ContextDetector.detect()
-            sm.currentContext = context
-            
-            // Sync to panel display
-            self.notchPanel?.setContext(context)
+            Task { @MainActor [weak self] in
+                guard let self = self,
+                      let sm = self.stateMachine,
+                      sm.state == .recording else { return }
+
+                // Update state machine (source of truth)
+                let context = ContextDetector.detect()
+                sm.currentContext = context
+
+                // Sync to panel display
+                self.notchPanel?.setContext(context)
+            }
         }
         
         // Wire up state machine callbacks
@@ -339,16 +357,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         
         sm.onInsertText = { [weak self] text in
-            guard let service = self?.textInsertionService else { return false }
-            // Returns true if paste was attempted (which maps to .success state in state machine)
-            // Returns false if fallback to clipboard occurred (which maps to .copiedToClipboard)
-            return service.insertText(text)
+            guard let self = self,
+                  let service = self.textInsertionService else {
+                return .failed("Text delivery unavailable.")
+            }
+
+            let result = service.insertText(text)
+            if let entryID = self.activeHistoryEntryID {
+                self.dictationHistoryService?.markDelivery(id: entryID, result: result)
+            }
+            return result
         }
         
         sm.onCancel = { [weak self] in
             // Cancel any in-progress transcription
             self?.transcriptionTask?.cancel()
             self?.transcriptionTask = nil
+            self?.discardCurrentHistoryEntry()
             
             // Stop recording if active
             self?.recordingService?.stopRecording()
@@ -397,6 +422,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 return
             }
             
+            let context = sm?.currentContext ?? .prose
+            let historyEntryID = self.dictationHistoryService?.createEntry(
+                audioURL: audioURL,
+                context: context
+            )
+            self.currentHistoryEntryID = historyEntryID
+
             self.logger.debug("Recording stopped, starting transcription...")
             
             // Notify that transcription has started (shows processing state)
@@ -416,14 +448,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 
                 do {
                     // Capture state machine reference again inside Task if needed, but it's captured outside
-                    let context = stateMachine?.currentContext ?? .prose
                     let text = try await TranscriptionCoordinator.shared.transcribe(audioURL: audioURL, context: context)
                     
                     // Check if task was cancelled
                     guard !Task.isCancelled else { return }
                     
                     await MainActor.run {
+                        if let historyEntryID {
+                            self?.dictationHistoryService?.markTranscriptionSucceeded(
+                                id: historyEntryID,
+                                text: text
+                            )
+                            self?.currentHistoryEntryID = nil
+                            self?.activeHistoryEntryID = historyEntryID
+                        }
                         stateMachine?.send(.transcriptionCompleted(text: text))
+                        self?.activeHistoryEntryID = nil
                     }
                 } catch {
                     // Check if task was cancelled
@@ -431,6 +471,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     
                     self?.logger.error("Transcription failed: \(error.localizedDescription)")
                     await MainActor.run {
+                        if let historyEntryID {
+                            self?.dictationHistoryService?.markTranscriptionFailed(
+                                id: historyEntryID,
+                                message: error.localizedDescription
+                            )
+                            self?.currentHistoryEntryID = nil
+                        }
                         stateMachine?.send(.transcriptionFailed(error: error.localizedDescription))
                     }
                 }
@@ -551,6 +598,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Cancel any in-progress transcription
             transcriptionTask?.cancel()
             transcriptionTask = nil
+            discardCurrentHistoryEntry()
             
             // Stop recording if active
             recordingService?.stopRecording()
@@ -611,6 +659,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.audioFeedbackService?.restoreVolume()
         }
     }
+
+    private func discardCurrentHistoryEntry() {
+        if let entryID = currentHistoryEntryID {
+            dictationHistoryService?.discardEntry(id: entryID)
+            currentHistoryEntryID = nil
+        }
+
+        if let entryID = activeHistoryEntryID {
+            dictationHistoryService?.discardEntry(id: entryID)
+            activeHistoryEntryID = nil
+        }
+    }
     
     // MARK: - Menu Actions
     
@@ -652,14 +712,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
     
+    @objc private func openRecent() {
+        NSApp.setActivationPolicy(.regular)
+
+        if let window = recentWindow, window.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
+            window.orderFrontRegardless()
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let history = dictationHistoryService ?? DictationHistoryService.shared
+        dictationHistoryService = history
+        let recentView = RecentDictationsView(history: history)
+        let hostingController = NSHostingController(rootView: recentView)
+
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Recent"
+        window.styleMask = [.titled, .closable, .resizable]
+        window.setContentSize(NSSize(width: 520, height: 420))
+        window.minSize = NSSize(width: 420, height: 320)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+
+        recentWindow = window
+
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        DispatchQueue.main.async {
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
     // MARK: - NSWindowDelegate
     
     func windowWillClose(_ notification: Notification) {
-        guard (notification.object as? NSWindow) == settingsWindow else { return }
+        guard let closedWindow = notification.object as? NSWindow,
+              closedWindow == settingsWindow || closedWindow == recentWindow else { return }
+
+        if closedWindow == settingsWindow {
+            settingsWindow = nil
+        }
+        if closedWindow == recentWindow {
+            recentWindow = nil
+        }
         
         // Switch back to accessory mode (menu bar only, no Dock icon)
         DispatchQueue.main.async {
-            NSApp.setActivationPolicy(.accessory)
+            if self.settingsWindow == nil && self.recentWindow == nil {
+                NSApp.setActivationPolicy(.accessory)
+            }
         }
     }
     
