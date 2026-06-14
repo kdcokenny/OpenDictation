@@ -280,9 +280,10 @@ final class DictationHistoryService: ObservableObject {
 
     private func pruneOverflowEntries() {
         while entries.count > maxEntries {
-            guard let index = entries.indices.reversed().first(where: { !entries[$0].isTranscribing }) else {
-                return
-            }
+            let index = entries.indices.reversed().first(where: { !entries[$0].isTranscribing })
+                ?? entries.indices.last
+
+            guard let index else { return }
 
             let removed = entries.remove(at: index)
             deleteAudio(for: removed)

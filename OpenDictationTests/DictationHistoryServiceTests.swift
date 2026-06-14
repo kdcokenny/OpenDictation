@@ -82,6 +82,23 @@ final class DictationHistoryServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: terminalAudioURL.path))
     }
 
+    func testMaxCountFallsBackToOldestTranscribingEntryWhenAllEntriesAreActive() throws {
+        // Given
+        let sut = makeService(maxEntries: 2)
+        let firstID = sut.createEntry(audioURL: try makeAudioFile(name: "first.wav"), context: .prose)
+        let firstAudioURL = try XCTUnwrap(sut.entries.first(where: { $0.id == firstID })?.audioURL)
+        let secondID = sut.createEntry(audioURL: try makeAudioFile(name: "second.wav"), context: .code)
+        let secondAudioURL = try XCTUnwrap(sut.entries.first(where: { $0.id == secondID })?.audioURL)
+
+        // When
+        let thirdID = sut.createEntry(audioURL: try makeAudioFile(name: "third.wav"), context: .prose)
+
+        // Then
+        XCTAssertEqual(sut.entries.map(\.id), [thirdID, secondID])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstAudioURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secondAudioURL.path))
+    }
+
     func testTTLPrunesExpiredTerminalEntryAndDeletesAudio() throws {
         // Given
         let sut = makeService(timeToLive: 60)
