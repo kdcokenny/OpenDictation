@@ -51,8 +51,30 @@ final class CloudTranscriptionProviderTests: XCTestCase {
             _ = try await sut.transcribe(audioURL: audioURL, context: .prose)
             XCTFail("Expected transcription to time out")
         } catch {
+            guard case TranscriptionError.transcriptionTimedOut = error else {
+                XCTFail("Expected transcriptionTimedOut, got \(error)")
+                return
+            }
+
             XCTAssertEqual(error.localizedDescription, "Transcription timed out.")
             XCTAssertEqual(attempts.count, 2)
+        }
+    }
+
+    func testCancellationIsNotMappedToNetworkError() async throws {
+        let attempts = AttemptCounter()
+        let sut = CloudTranscriptionProvider(apiKeyProvider: Self.testAPIKey) { _, _ in
+            attempts.increment()
+            throw CancellationError()
+        }
+
+        do {
+            _ = try await sut.transcribe(audioURL: audioURL, context: .prose)
+            XCTFail("Expected transcription to be cancelled")
+        } catch is CancellationError {
+            XCTAssertEqual(attempts.count, 1)
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
         }
     }
 

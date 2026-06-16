@@ -159,7 +159,9 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
     /// - Throws: `TranscriptionError` if transcription fails.
     func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
         // Get API key from the configured credential source.
-        guard let apiKey = apiKeyProvider(),
+        let apiKey = apiKeyProvider()?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let apiKey,
               !apiKey.isEmpty else {
             logger.error("API key is missing")
             throw TranscriptionError.apiKeyMissing
@@ -220,7 +222,12 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await uploadWithRetry(request: request, body: body)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
+            if isCancellation(error) {
+                throw CancellationError()
+            }
             throw mapNetworkError(error)
         }
         
@@ -271,8 +278,8 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
             do {
                 return try await upload(request: request, body: body)
             } catch {
-                if Task.isCancelled {
-                    throw error
+                if Task.isCancelled || isCancellation(error) {
+                    throw CancellationError()
                 }
 
                 lastError = error
@@ -283,6 +290,8 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
                     throw error
                 }
 
+                // A lost upload response may already have reached the server. Keep this
+                // to one retry unless the transcription endpoint supports idempotency.
                 logger.info("Retrying cloud transcription upload after transient network error")
                 try await Task.sleep(nanoseconds: NetworkPolicy.retryDelayNanoseconds)
             }
@@ -325,6 +334,14 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
 
         logger.error("Network request failed: \(error.localizedDescription)")
         return .networkError(error)
+    }
+
+    private func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+
+        return (error as? URLError)?.code == .cancelled
     }
 
     private func logNetworkError(_ error: Error, attempt: Int) {
