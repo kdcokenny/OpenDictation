@@ -6,12 +6,12 @@ final class CloudTranscriptionProviderTests: XCTestCase {
 
     private var audioURL: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
         audioURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("CloudTranscriptionProviderTests-\(UUID().uuidString)")
             .appendingPathExtension("wav")
-        try! Data([0, 1, 2, 3]).write(to: audioURL)
+        try Data([0, 1, 2, 3]).write(to: audioURL)
     }
 
     override func tearDown() {
