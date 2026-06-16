@@ -8,6 +8,7 @@ enum TranscriptionError: Error, LocalizedError {
     case audioFileNotFound
     case audioFileEmpty
     case networkError(Error)
+    case transcriptionTimedOut
     case apiRequestFailed(statusCode: Int, message: String)
     case noTranscriptionReturned
     case invalidResponse
@@ -24,6 +25,8 @@ enum TranscriptionError: Error, LocalizedError {
             return "Audio file is empty."
         case .networkError(let error):
             return "Couldn't connect: \(error.localizedDescription)"
+        case .transcriptionTimedOut:
+            return "Transcription timed out."
         case .apiRequestFailed(let statusCode, let message):
             return "Server error (\(statusCode)): \(message)"
         case .noTranscriptionReturned:
@@ -44,6 +47,9 @@ enum TranscriptionError: Error, LocalizedError {
 /// Configuration is read from UserDefaults (baseURL, model, temperature, language)
 /// and Keychain (API key).
 actor CloudTranscriptionProvider: TranscriptionProvider {
+
+    typealias UploadHandler = @Sendable (URLRequest, Data) async throws -> (Data, URLResponse)
+    typealias APIKeyProvider = @Sendable () -> String?
     
     // MARK: - Singleton
     
@@ -52,8 +58,45 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
     // MARK: - Logger
     
     private let logger = Logger.app(category: "CloudTranscriptionProvider")
-    
-    private init() {}
+
+    private let session: URLSession
+    private let apiKeyProvider: APIKeyProvider
+    private let uploadHandler: UploadHandler?
+
+    private enum NetworkPolicy {
+        static let maxUploadAttempts = 2
+        static let retryDelayNanoseconds: UInt64 = 500_000_000
+    }
+
+    private init(
+        session: URLSession = CloudTranscriptionProvider.makeSession(),
+        apiKeyProvider: @escaping APIKeyProvider = {
+            KeychainService.shared.load(KeychainService.Key.apiKey)
+        }
+    ) {
+        self.session = session
+        self.apiKeyProvider = apiKeyProvider
+        self.uploadHandler = nil
+    }
+
+    init(
+        apiKeyProvider: @escaping APIKeyProvider,
+        uploadHandler: @escaping UploadHandler
+    ) {
+        self.session = CloudTranscriptionProvider.makeSession()
+        self.apiKeyProvider = apiKeyProvider
+        self.uploadHandler = uploadHandler
+    }
+
+    private static func makeSession() -> URLSession {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 600
+        config.waitsForConnectivity = true
+        config.allowsExpensiveNetworkAccess = true
+        config.allowsConstrainedNetworkAccess = true
+        return URLSession(configuration: config)
+    }
     
     // MARK: - Settings Access
     
@@ -115,8 +158,8 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
     /// - Returns: The transcribed text.
     /// - Throws: `TranscriptionError` if transcription fails.
     func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
-        // Get API key from Keychain
-        guard let apiKey = KeychainService.shared.load(KeychainService.Key.apiKey),
+        // Get API key from the configured credential source.
+        guard let apiKey = apiKeyProvider(),
               !apiKey.isEmpty else {
             logger.error("API key is missing")
             throw TranscriptionError.apiKeyMissing
@@ -176,10 +219,9 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
         // Make the request using upload API (better for large files)
         let (data, response): (Data, URLResponse)
         do {
-            (data, response) = try await URLSession.shared.upload(for: request, from: body)
+            (data, response) = try await uploadWithRetry(request: request, body: body)
         } catch {
-            logger.error("Network request failed: \(error.localizedDescription)")
-            throw TranscriptionError.networkError(error)
+            throw mapNetworkError(error)
         }
         
         // Check HTTP status
@@ -218,6 +260,79 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
         
         // Clean and return text
         return Self.cleanTranscriptionText(whisperResponse.text)
+    }
+
+    // MARK: - Upload Retry
+
+    private func uploadWithRetry(request: URLRequest, body: Data) async throws -> (Data, URLResponse) {
+        var lastError: Error?
+
+        for attempt in 1...NetworkPolicy.maxUploadAttempts {
+            do {
+                return try await upload(request: request, body: body)
+            } catch {
+                if Task.isCancelled {
+                    throw error
+                }
+
+                lastError = error
+                logNetworkError(error, attempt: attempt)
+
+                guard attempt < NetworkPolicy.maxUploadAttempts,
+                      isTransientNetworkError(error) else {
+                    throw error
+                }
+
+                logger.info("Retrying cloud transcription upload after transient network error")
+                try await Task.sleep(nanoseconds: NetworkPolicy.retryDelayNanoseconds)
+            }
+        }
+
+        throw lastError ?? TranscriptionError.invalidResponse
+    }
+
+    private func upload(request: URLRequest, body: Data) async throws -> (Data, URLResponse) {
+        if let uploadHandler {
+            return try await uploadHandler(request, body)
+        }
+
+        return try await session.upload(for: request, from: body)
+    }
+
+    private func isTransientNetworkError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else {
+            return false
+        }
+
+        switch urlError.code {
+        case .timedOut,
+             .networkConnectionLost,
+             .notConnectedToInternet,
+             .cannotConnectToHost,
+             .cannotFindHost,
+             .dnsLookupFailed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func mapNetworkError(_ error: Error) -> TranscriptionError {
+        if let urlError = error as? URLError,
+           urlError.code == .timedOut {
+            return .transcriptionTimedOut
+        }
+
+        logger.error("Network request failed: \(error.localizedDescription)")
+        return .networkError(error)
+    }
+
+    private func logNetworkError(_ error: Error, attempt: Int) {
+        if let urlError = error as? URLError {
+            logger.error("Cloud transcription upload attempt \(attempt) failed with URLError \(urlError.code.rawValue): \(urlError.localizedDescription)")
+        } else {
+            logger.error("Cloud transcription upload attempt \(attempt) failed: \(error.localizedDescription)")
+        }
     }
     
     // MARK: - Error Parsing
