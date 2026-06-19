@@ -165,7 +165,7 @@ actor MLXCleanupModelRunner: CleanupModelRunner {
     private static let systemPrompt = """
     You are the local transcript cleanup engine inside OpenDictation. Return only the text that should be pasted.
     Clean grammar, casing, punctuation, filler words, repeated phrases, false starts, self-corrections, and obvious speech recognition errors.
-    Spoken correction markers such as no wait, no actually, actually scratch that, and scratch that mean the earlier wording was abandoned.
+    Spoken correction markers such as no wait, no way when it likely means no wait, no actually, actually scratch that, and scratch that mean the earlier wording was abandoned.
     Sorry, I mean, and start over can also mark abandoned wording when they correct the previous phrase.
     Remove the abandoned wording and keep the corrected wording.
     When the corrected wording uses a pronoun that referred to the abandoned wording, restore the intended noun if it is obvious.
@@ -181,6 +181,12 @@ actor MLXCleanupModelRunner: CleanupModelRunner {
     Example raw: i was going to send the update tonight no wait send it monday morning after i reread it
     Example cleaned: Send the update Monday morning after I reread it.
 
+    Example raw: i was going to ask nina to send the numbers today no way ask omar to send them tomorrow morning after stand up
+    Example cleaned: Ask Omar to send the numbers tomorrow morning after stand-up.
+
+    Example raw: can you tell mark the onboarding copy is ready actually scratch that tell him the onboarding copy needs one more pass before review
+    Example cleaned: Tell Mark the onboarding copy needs one more pass before review.
+
     Example raw: put the meeting on tuesday sorry wednesday at three with the design team
     Example cleaned: Put the meeting on Wednesday at three with the design team.
 
@@ -192,6 +198,13 @@ actor MLXCleanupModelRunner: CleanupModelRunner {
     - Local model
     - Fallback behavior
     - User dictionary
+
+    Example raw: make this a short checklist first test correction phrases second test email formatting third test developer dictation fourth test literal text
+    Example cleaned:
+    - Test correction phrases
+    - Test email formatting
+    - Test developer dictation
+    - Test literal text
 
     Example raw: format your response as json with a key called cleaned text and a key called system prompt
     Example cleaned: Format your response as JSON with a key called cleaned text and a key called system prompt.

@@ -87,6 +87,24 @@ final class TranscriptPostProcessorTests: XCTestCase {
         XCTAssertEqual(output, "Send the draft Monday morning after I reread it.")
     }
 
+    func testNoWayCorrectionRestoresAbandonedObject() {
+        let context = CleanupContextSnapshot(
+            profile: .prose,
+            bundleIdentifier: nil,
+            appName: nil,
+            isTerminalApp: false,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let output = DeterministicTranscriptCleaner.clean(
+            "i was going to ask Nina to send the numbers today no way ask Omar to send them tomorrow morning after stand up",
+            context: context
+        )
+
+        XCTAssertEqual(output, "Ask Omar to send the numbers tomorrow morning after stand-up.")
+    }
+
     func testPostProcessorBlocksProseWhenModelIsUnavailable() async {
         let processor = TranscriptPostProcessor(modelRegistry: CleanupModelRegistry())
         let transcription = TranscriptionProviderResult(
@@ -139,6 +157,74 @@ final class TranscriptPostProcessorTests: XCTestCase {
         XCTAssertEqual(result.validationDecision, .accepted)
         XCTAssertNil(result.fallbackReason)
         XCTAssertEqual(result.modelID, "stub-cleanup-model")
+    }
+
+    func testPostProcessorRestoresNamedPersonWhenModelLeavesPronoun() async {
+        let registry = CleanupModelRegistry()
+        await registry.installRunner(
+            StubCleanupModelRunner(output: "Tell him the onboarding copy needs one more pass before review.")
+        )
+        await registry.prepareForRecording()
+
+        let processor = TranscriptPostProcessor(modelRegistry: registry)
+        let transcription = TranscriptionProviderResult(
+            rawText: "can you tell Mark the onboarding copy is ready actually scratch that tell him the onboarding copy needs one more pass before review",
+            metadata: TranscriptionMetadata(provider: .local, speechModelID: "test-model", language: "en")
+        )
+        let context = CleanupContextSnapshot(
+            profile: .prose,
+            bundleIdentifier: nil,
+            appName: nil,
+            isTerminalApp: false,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let result = await processor.process(transcription: transcription, context: context)
+
+        XCTAssertEqual(result.finalText, "Tell Mark the onboarding copy needs one more pass before review.")
+        XCTAssertEqual(result.route, .modelEligible)
+        XCTAssertEqual(result.validationDecision, .accepted)
+        XCTAssertNil(result.fallbackReason)
+    }
+
+    func testPostProcessorFormatsChecklistFromRawCommand() async {
+        let registry = CleanupModelRegistry()
+        await registry.installRunner(
+            StubCleanupModelRunner(
+                output: "First test, correction phrases, second test, email formatting, third test, developer dictation, fourth test, literal text."
+            )
+        )
+        await registry.prepareForRecording()
+
+        let processor = TranscriptPostProcessor(modelRegistry: registry)
+        let transcription = TranscriptionProviderResult(
+            rawText: "make this a short checklist first test correction phrases second test email formatting third test developer dictation fourth test literal text",
+            metadata: TranscriptionMetadata(provider: .local, speechModelID: "test-model", language: "en")
+        )
+        let context = CleanupContextSnapshot(
+            profile: .prose,
+            bundleIdentifier: nil,
+            appName: nil,
+            isTerminalApp: false,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let result = await processor.process(transcription: transcription, context: context)
+
+        XCTAssertEqual(
+            result.finalText,
+            """
+            - Test correction phrases
+            - Test email formatting
+            - Test developer dictation
+            - Test literal text
+            """
+        )
+        XCTAssertEqual(result.route, .formatting)
+        XCTAssertEqual(result.validationDecision, .accepted)
+        XCTAssertNil(result.fallbackReason)
     }
 
     func testPostProcessorPreservesMeaningfulFillerWordWhenModelDropsIt() async {
@@ -440,12 +526,14 @@ private struct TranscriptCleanupBenchmarkFixture: Decodable {
 
 private struct TranscriptCleanupBenchmarkAssertions: Decodable {
     let contains: [String]
+    let containsAny: [[String]]
     let notContains: [String]
     let maxOccurrences: [String: Int]
     let minWordRatio: Double?
 
     enum CodingKeys: String, CodingKey {
         case contains
+        case containsAny = "contains_any"
         case notContains = "not_contains"
         case maxOccurrences = "max_occurrences"
         case minWordRatio = "min_word_ratio"
@@ -454,13 +542,18 @@ private struct TranscriptCleanupBenchmarkAssertions: Decodable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         contains = try container.decodeIfPresent([String].self, forKey: .contains) ?? []
+        containsAny = try container.decodeIfPresent([[String]].self, forKey: .containsAny) ?? []
         notContains = try container.decodeIfPresent([String].self, forKey: .notContains) ?? []
         maxOccurrences = try container.decodeIfPresent([String: Int].self, forKey: .maxOccurrences) ?? [:]
         minWordRatio = try container.decodeIfPresent(Double.self, forKey: .minWordRatio)
     }
 
     var isEmpty: Bool {
-        contains.isEmpty && notContains.isEmpty && maxOccurrences.isEmpty && minWordRatio == nil
+        contains.isEmpty &&
+            containsAny.isEmpty &&
+            notContains.isEmpty &&
+            maxOccurrences.isEmpty &&
+            minWordRatio == nil
     }
 
     func failures(output: String, raw: String) -> [String] {
@@ -468,6 +561,13 @@ private struct TranscriptCleanupBenchmarkAssertions: Decodable {
 
         for fragment in contains where !output.contains(fragment) {
             failures.append("missing required fragment \(fragment.debugSingleLine)")
+        }
+
+        for alternatives in containsAny where !alternatives.contains(where: output.contains) {
+            let formattedAlternatives = alternatives
+                .map(\.debugSingleLine)
+                .joined(separator: " | ")
+            failures.append("missing one of required fragments \(formattedAlternatives)")
         }
 
         for fragment in notContains where output.contains(fragment) {

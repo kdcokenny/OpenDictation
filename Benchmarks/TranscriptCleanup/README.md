@@ -6,6 +6,7 @@ The benchmark contract is intentionally product-focused:
 
 - deterministic cleanup must pass exact, case-sensitive expectations;
 - model-forced hard cases must prove a candidate model is better before it can become default;
+- `contains_any` may be used for equivalent punctuation or typography variants;
 - hybrid product runs must report route, latency, fallback, memory, and severe-error counts;
 - audio end-to-end manifests should be added before claiming everyday-user consistency.
 

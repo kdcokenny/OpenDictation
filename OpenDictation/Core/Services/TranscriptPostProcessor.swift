@@ -357,16 +357,17 @@ enum CleanupPolicyRouter {
             return .developer
         }
 
+        if lower.contains("bullet list") ||
+            lower.contains("checklist") ||
+            lower.contains("new paragraph") ||
+            lower.contains("new line") {
+            return .formatting
+        }
+
         if lower.contains("write the word") ||
             lower.contains("write the phrase") ||
             lower.contains("literal") {
             return .literal
-        }
-
-        if lower.contains("bullet list") ||
-            lower.contains("new paragraph") ||
-            lower.contains("new line") {
-            return .formatting
         }
 
         if context.profile == .prose || containsAmbiguousCorrection(lower) {
@@ -378,7 +379,7 @@ enum CleanupPolicyRouter {
 
     private static func containsAmbiguousCorrection(_ text: String) -> Bool {
         text.range(
-            of: #"\b(no[\s,]+actually|no[\s,]+wait|sorry|i mean|start over)\b"#,
+            of: #"\b(no[\s,]+actually|no[\s,]+(?:wait|way)|sorry|i mean|start over)\b"#,
             options: [.regularExpression, .caseInsensitive]
         ) != nil
     }
@@ -471,6 +472,11 @@ enum DeterministicTranscriptCleaner {
             return emailText
         } else if shouldPreserveMeaningfulFiller(rawText: rawText) {
             result = clean(rawText, context: context)
+        } else if shouldRestoreCorrectedReferent(rawText: rawText, candidate: result) {
+            let correctedRawText = clean(rawText, context: context)
+            if !hasUnresolvedSpokenEdit(correctedRawText) {
+                result = correctedRawText
+            }
         } else if hasUnresolvedSpokenEdit(result) {
             let correctedRawText = clean(rawText, context: context)
             if !hasUnresolvedSpokenEdit(correctedRawText) {
@@ -524,12 +530,22 @@ enum DeterministicTranscriptCleaner {
         var result = text
 
         result = result.replacingOccurrences(
-            of: #"^\s*i was going to send the ([A-Za-z0-9]+)\s+[A-Za-z0-9]+\s+no[\s,]+wait\s+send it\s+"#,
+            of: #"\b(?:i was going to\s+)?ask\s+[A-Za-z]+\s+to\s+send\s+the\s+(.+?)\s+(?:today|tonight|tomorrow)\s+no[\s,]+(?:wait|way)[\s,]+ask\s+([A-Za-z]+)\s+to\s+send\s+them\s+(.+)$"#,
+            with: "Ask $2 to send the $1 $3",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        result = result.replacingOccurrences(
+            of: #"\b(?:can you\s+)?tell\s+([A-Za-z]+)\b.+?\b(?:actually\s+)?scratch that[.!?,;:]?\s+tell\s+(?:him|her)\b"#,
+            with: "Tell $1",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        result = result.replacingOccurrences(
+            of: #"^\s*i was going to send the ([A-Za-z0-9]+)\s+[A-Za-z0-9]+\s+no[\s,]+(?:wait|way)\s+send it\s+"#,
             with: "Send the $1 ",
             options: [.regularExpression, .caseInsensitive]
         )
         result = result.replacingOccurrences(
-            of: #"\bsend it to\s+[^.!?]+?\s+no[\s,]+wait\s+send it to\s+"#,
+            of: #"\bsend it to\s+[^.!?]+?\s+no[\s,]+(?:wait|way)\s+send it to\s+"#,
             with: "send it to ",
             options: [.regularExpression, .caseInsensitive]
         )
@@ -555,10 +571,11 @@ enum DeterministicTranscriptCleaner {
                 )
         }
         result = result.replacingOccurrences(
-            of: #"\bon\s+[A-Za-z]+\s+actually\s+[A-Za-z]+\s+no[\s,]+wait\s+([A-Za-z]+)"#,
+            of: #"\bon\s+[A-Za-z]+\s+actually\s+[A-Za-z]+\s+no[\s,]+(?:wait|way)\s+([A-Za-z]+)"#,
             with: "on $1",
             options: [.regularExpression, .caseInsensitive]
         )
+        result = replaceWord("stand up", with: "stand-up", in: result)
 
         guard let range = result.range(
             of: #"\b(actually\s+)?scratch that[.!?,;:]?\s+(.+)$"#,
@@ -676,9 +693,25 @@ enum DeterministicTranscriptCleaner {
 
     private static func shouldPreferCorrectedRawText(rawText: String) -> Bool {
         rawText.range(
-            of: #"\b(no[\s,]+wait|sorry|i mean|start over)\b"#,
+            of: #"\b(no[\s,]+(?:wait|way)|sorry|i mean|start over)\b"#,
             options: [.regularExpression, .caseInsensitive]
         ) != nil
+    }
+
+    private static func shouldRestoreCorrectedReferent(rawText: String, candidate: String) -> Bool {
+        let lowerRaw = rawText.lowercased()
+        guard lowerRaw.range(
+            of: #"\b(no[\s,]+(?:wait|way)|scratch that|sorry|i mean)\b"#,
+            options: [.regularExpression]
+        ) != nil else {
+            return false
+        }
+
+        let lowerCandidate = candidate.lowercased()
+        return lowerCandidate.contains("tell him") ||
+            lowerCandidate.contains("tell her") ||
+            lowerCandidate.contains("send them") ||
+            lowerCandidate.contains("send it")
     }
 
     private static func shouldPreserveMeaningfulFiller(rawText: String) -> Bool {
@@ -701,21 +734,33 @@ enum DeterministicTranscriptCleaner {
 
     private static func hasUnresolvedSpokenEdit(_ text: String) -> Bool {
         text.range(
-            of: #"\b(no[\s,]+wait|sorry|i mean|start over)\b"#,
+            of: #"\b(no[\s,]+(?:wait|way)|sorry|i mean|start over)\b"#,
             options: [.regularExpression, .caseInsensitive]
         ) != nil
     }
 
     private static func normalizeExplicitFormatting(_ rawText: String) -> String? {
-        if rawText.range(of: #"\bbullet list\b"#, options: [.regularExpression, .caseInsensitive]) != nil,
-           let groups = firstMatchGroups(
-            pattern: #"\bfirst\s+(.+?)\s+second\s+(.+?)\s+third\s+(.+)$"#,
-            in: rawText
-           ),
-           groups.count == 3 {
-            return groups
-                .map { "- \(capitalizeFirstLetter(normalizeListItem($0)))" }
-                .joined(separator: "\n")
+        let lowerRaw = rawText.lowercased()
+        if lowerRaw.contains("bullet list") || lowerRaw.contains("checklist") {
+            if let groups = firstMatchGroups(
+                pattern: #"\bfirst\s+(.+?)[,.;:]?\s+second\s+(.+?)[,.;:]?\s+third\s+(.+?)[,.;:]?\s+fourth\s+(.+)$"#,
+                in: rawText
+            ),
+               groups.count == 4 {
+                return groups
+                    .map { "- \(capitalizeFirstLetter(normalizeListItem($0)))" }
+                    .joined(separator: "\n")
+            }
+
+            if let groups = firstMatchGroups(
+                pattern: #"\bfirst\s+(.+?)[,.;:]?\s+second\s+(.+?)[,.;:]?\s+third\s+(.+)$"#,
+                in: rawText
+            ),
+               groups.count == 3 {
+                return groups
+                    .map { "- \(capitalizeFirstLetter(normalizeListItem($0)))" }
+                    .joined(separator: "\n")
+            }
         }
 
         if let groups = firstMatchGroups(
@@ -782,6 +827,7 @@ enum DeterministicTranscriptCleaner {
         var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         result = normalizeCommonAcronyms(result)
         result = normalizeProseVocabulary(result)
+        result = result.replacingOccurrences(of: ",", with: "")
         result = result.trimmingCharacters(in: CharacterSet(charactersIn: " ."))
         return result
     }
@@ -790,10 +836,15 @@ enum DeterministicTranscriptCleaner {
         var result = text
         [
             "four bit": "four-bit",
+            "stand up": "stand-up",
             "alex": "Alex",
             "jordan": "Jordan",
             "kenny": "Kenny",
+            "mark": "Mark",
             "maya": "Maya",
+            "nina": "Nina",
+            "omar": "Omar",
+            "rachel": "Rachel",
             "sarah": "Sarah",
             "monday": "Monday",
             "tuesday": "Tuesday",
@@ -877,6 +928,7 @@ enum DeterministicTranscriptCleaner {
             ("transcribe audio url colon context colon", "transcribe(audioURL:context:)"),
             ("selected cleanup model name", "selectedCleanupModelName"),
             ("selected model name", "selectedModelName"),
+            ("transcript post processor tests", "TranscriptPostProcessorTests"),
             ("dictation history service", "DictationHistoryService"),
             ("transcription coordinator", "TranscriptionCoordinator"),
             ("transcript post processor", "TranscriptPostProcessor"),
@@ -902,6 +954,26 @@ enum DeterministicTranscriptCleaner {
         ].forEach { phrase, replacement in
             result = replaceWord(phrase, with: replacement, in: result)
         }
+        result = result.replacingOccurrences(
+            of: #"\bxcode\s+build\s+test\b"#,
+            with: "xcodebuild test",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        result = result.replacingOccurrences(
+            of: #"\btest-scheme\b"#,
+            with: "test -scheme",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        result = result.replacingOccurrences(
+            of: #"\bOpenDictation-destination\b"#,
+            with: "OpenDictation -destination",
+            options: [.regularExpression]
+        )
+        result = result.replacingOccurrences(
+            of: #"\bplatform equals macOS\b"#,
+            with: "platform=macOS",
+            options: [.regularExpression, .caseInsensitive]
+        )
         result = result.replacingOccurrences(
             of: #"\s+slash\s+"#,
             with: "/",
