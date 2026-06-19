@@ -418,7 +418,7 @@ enum DeterministicTranscriptCleaner {
         }
 
         guard let range = text.range(
-            of: #"\bscratch that\b\s+(.+)$"#,
+            of: #"\b(actually\s+)?scratch that[.!?,;:]?\s+(.+)$"#,
             options: [.regularExpression, .caseInsensitive]
         ) else {
             return text
@@ -426,7 +426,7 @@ enum DeterministicTranscriptCleaner {
 
         return String(text[range])
             .replacingOccurrences(
-                of: #"^scratch that\s+"#,
+                of: #"^(actually\s+)?scratch that[.!?,;:]?\s+"#,
                 with: "",
                 options: [.regularExpression, .caseInsensitive]
             )

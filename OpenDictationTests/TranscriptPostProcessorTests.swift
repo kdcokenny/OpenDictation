@@ -69,6 +69,24 @@ final class TranscriptPostProcessorTests: XCTestCase {
         XCTAssertEqual(output, "send the draft monday morning after I reread it.")
     }
 
+    func testScratchThatCommandDropsAbandonedSentence() {
+        let context = CleanupContextSnapshot(
+            profile: .prose,
+            bundleIdentifier: nil,
+            appName: nil,
+            isTerminalApp: false,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let output = DeterministicTranscriptCleaner.clean(
+            "Send the draft tonight. Actually scratch that. Send the draft Monday morning after I reread it.",
+            context: context
+        )
+
+        XCTAssertEqual(output, "Send the draft Monday morning after I reread it.")
+    }
+
     func testPostProcessorReturnsStructuredMetadata() async {
         let processor = TranscriptPostProcessor(modelRegistry: CleanupModelRegistry())
         let transcription = TranscriptionProviderResult(
