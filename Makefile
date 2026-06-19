@@ -11,7 +11,7 @@ MODELS_DIR := OpenDictation/Resources/Models
 TINY_URL := https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
 SILERO_VAD_URL := https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
 
-.PHONY: all clean whisper models setup build check help dev reset release dmg run-release run lint lint-fix lsp test
+.PHONY: all clean whisper models setup build check help dev reset release dmg run-release run lint lint-fix lsp test benchmark-cleanup
 
 # Default target
 all: check setup build
@@ -104,6 +104,10 @@ test: setup
 		-scheme OpenDictationTests \
 		-destination 'platform=macOS' \
 		test
+
+benchmark-cleanup:
+	@echo "Running live transcript cleanup benchmark..."
+	@./script/benchmark_transcript_cleanup.sh
 
 
 # Run the app (debug build)
@@ -215,6 +219,7 @@ help:
 	@echo "  lint        Run SwiftLint on all Swift files"
 	@echo "  lint-fix    Auto-fix SwiftLint violations"
 	@echo "  lsp         Setup LSP for non-Xcode editors (VSCode, Neovim, etc.)"
+	@echo "  benchmark-cleanup Run the live local transcript cleanup benchmark"
 	@echo "  help        Show this help message"
 	@echo ""
 	@echo "Quick start (development):"
