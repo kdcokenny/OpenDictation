@@ -64,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         setupStatusItem()
         setupServices()
+        setupTranscriptCleanup()
         setupEscapeKeyMonitor()
         setupStateMachine()
         setupLocalTranscription()
@@ -202,6 +203,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // NOTE: Permissions are now requested lazily:
             // - Accessibility: prompted once per version when hotkey is first pressed
             // - Microphone: prompted when user first tries to record
+        }
+    }
+
+    private func setupTranscriptCleanup() {
+        guard let runner = MLXCleanupModelRunner.makeDefaultIfAvailable() else {
+            logger.warning("Local cleanup model runner is unavailable")
+            return
+        }
+
+        Task {
+            await CleanupModelRegistry.shared.installRunner(runner)
+            self.logger.info("Local cleanup model runner registered: \(runner.manifest.id)")
         }
     }
     

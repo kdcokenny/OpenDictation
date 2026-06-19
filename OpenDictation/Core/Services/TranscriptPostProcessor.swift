@@ -24,6 +24,17 @@ enum CleanupRoute: String, Equatable, Codable, Sendable {
     case formatting
 }
 
+extension CleanupRoute {
+    var requiresModel: Bool {
+        switch self {
+        case .modelEligible, .formatting:
+            return true
+        case .deterministic, .terminal, .developer, .literal:
+            return false
+        }
+    }
+}
+
 enum CleanupModelState: Equatable, Sendable {
     case unloaded
     case loading
@@ -123,7 +134,7 @@ struct CleanupResult: Equatable, Sendable {
 
 extension CleanupResult {
     var blockingError: TranscriptCleanupError? {
-        guard route == .modelEligible else { return nil }
+        guard route.requiresModel else { return nil }
 
         switch fallbackReason {
         case .modelUnavailable:
@@ -245,7 +256,7 @@ actor TranscriptPostProcessor {
             context: context
         )
 
-        guard route == .modelEligible,
+        guard route.requiresModel,
               let runner = await modelRegistry.readyRunner() else {
             return CleanupResult(
                 rawText: transcription.rawText,
@@ -255,7 +266,7 @@ actor TranscriptPostProcessor {
                 modelID: nil,
                 promptVersion: nil,
                 validationDecision: .notEvaluated,
-                fallbackReason: route == .modelEligible ? .modelUnavailable : .deterministicOnly,
+                fallbackReason: route.requiresModel ? .modelUnavailable : .deterministicOnly,
                 latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt)
             )
         }
@@ -267,7 +278,7 @@ actor TranscriptPostProcessor {
             route: route,
             context: context,
             promptVersion: manifest.promptVersion,
-            deadline: Date().addingTimeInterval(2),
+            deadline: Date().addingTimeInterval(45),
             maxOutputCharacters: max(artifactFiltered.count * 2, 256)
         )
 
@@ -351,7 +362,7 @@ enum CleanupPolicyRouter {
             return .formatting
         }
 
-        if containsAmbiguousCorrection(lower) {
+        if context.profile == .prose || containsAmbiguousCorrection(lower) {
             return .modelEligible
         }
 

@@ -87,7 +87,7 @@ final class TranscriptPostProcessorTests: XCTestCase {
         XCTAssertEqual(output, "Send the draft Monday morning after I reread it.")
     }
 
-    func testPostProcessorReturnsStructuredMetadata() async {
+    func testPostProcessorBlocksProseWhenModelIsUnavailable() async {
         let processor = TranscriptPostProcessor(modelRegistry: CleanupModelRegistry())
         let transcription = TranscriptionProviderResult(
             rawText: "um we should keep the settings simple",
@@ -105,9 +105,40 @@ final class TranscriptPostProcessorTests: XCTestCase {
         let result = await processor.process(transcription: transcription, context: context)
 
         XCTAssertEqual(result.finalText, "we should keep the settings simple.")
-        XCTAssertEqual(result.route, .deterministic)
-        XCTAssertEqual(result.fallbackReason, .deterministicOnly)
+        XCTAssertEqual(result.route, .modelEligible)
+        XCTAssertEqual(result.fallbackReason, .modelUnavailable)
+        XCTAssertEqual(result.blockingError, .modelUnavailable)
         XCTAssertNil(result.modelID)
+    }
+
+    func testPostProcessorUsesInstalledRunnerForProse() async {
+        let registry = CleanupModelRegistry()
+        await registry.installRunner(
+            StubCleanupModelRunner(output: "We should keep the settings simple and make the model automatic.")
+        )
+        await registry.prepareForRecording()
+
+        let processor = TranscriptPostProcessor(modelRegistry: registry)
+        let transcription = TranscriptionProviderResult(
+            rawText: "um we should keep the settings simple in the model automatic",
+            metadata: TranscriptionMetadata(provider: .cloud, speechModelID: "whisper-1", language: "en")
+        )
+        let context = CleanupContextSnapshot(
+            profile: .prose,
+            bundleIdentifier: nil,
+            appName: nil,
+            isTerminalApp: false,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let result = await processor.process(transcription: transcription, context: context)
+
+        XCTAssertEqual(result.finalText, "We should keep the settings simple and make the model automatic.")
+        XCTAssertEqual(result.route, .modelEligible)
+        XCTAssertEqual(result.validationDecision, .accepted)
+        XCTAssertNil(result.fallbackReason)
+        XCTAssertEqual(result.modelID, "stub-cleanup-model")
     }
 
     func testAmbiguousCorrectionWithPunctuationRequiresModel() {
@@ -151,4 +182,50 @@ final class TranscriptPostProcessorTests: XCTestCase {
         XCTAssertEqual(result.fallbackReason, .modelUnavailable)
         XCTAssertEqual(result.blockingError, .modelUnavailable)
     }
+}
+
+private actor StubCleanupModelRunner: CleanupModelRunner {
+    nonisolated let manifest = CleanupModelManifest(
+        id: "stub-cleanup-model",
+        runtime: "test",
+        promptVersion: "stub-v1",
+        quantization: nil,
+        sha256: nil,
+        minimumMemoryGB: 0,
+        recommendedMemoryGB: 0,
+        supportedRoutes: [.modelEligible, .formatting],
+        supportedLocales: ["en"],
+        bundlePath: "stub",
+        benchmarkBaselineID: nil
+    )
+    nonisolated let output: String
+    private var currentState: CleanupModelState = .unloaded
+
+    init(output: String) {
+        self.output = output
+    }
+
+    func load() async throws {
+        currentState = .loaded
+    }
+
+    func prewarm() async throws {
+        currentState = .ready
+    }
+
+    func state() async -> CleanupModelState {
+        currentState
+    }
+
+    func clean(_ request: CleanupModelRequest) async throws -> CleanupModelCandidate {
+        CleanupModelCandidate(
+            text: output,
+            modelID: manifest.id,
+            promptVersion: manifest.promptVersion,
+            latencyMilliseconds: 1,
+            timedOut: false
+        )
+    }
+
+    func cancel() async {}
 }
