@@ -40,6 +40,23 @@ enum CleanupFallbackReason: String, Equatable, Codable, Sendable {
     case deterministicOnly
 }
 
+enum TranscriptCleanupError: LocalizedError, Equatable, Sendable {
+    case modelUnavailable
+    case modelTimedOut
+    case modelRejected
+
+    var errorDescription: String? {
+        switch self {
+        case .modelUnavailable:
+            return "Local cleanup model is not ready. Nothing was pasted."
+        case .modelTimedOut:
+            return "Local cleanup model timed out. Nothing was pasted."
+        case .modelRejected:
+            return "Local cleanup could not produce a safe result. Nothing was pasted."
+        }
+    }
+}
+
 enum CleanupValidationDecision: String, Equatable, Codable, Sendable {
     case accepted
     case rejected
@@ -102,6 +119,23 @@ struct CleanupResult: Equatable, Sendable {
     let validationDecision: CleanupValidationDecision
     let fallbackReason: CleanupFallbackReason?
     let latencyMilliseconds: Int
+}
+
+extension CleanupResult {
+    var blockingError: TranscriptCleanupError? {
+        guard route == .modelEligible else { return nil }
+
+        switch fallbackReason {
+        case .modelUnavailable:
+            return .modelUnavailable
+        case .modelTimedOut:
+            return .modelTimedOut
+        case .modelRejected:
+            return .modelRejected
+        case .deterministicOnly, nil:
+            return nil
+        }
+    }
 }
 
 struct DictationPipelineResult: Equatable, Sendable {
@@ -317,8 +351,7 @@ enum CleanupPolicyRouter {
             return .formatting
         }
 
-        if containsAmbiguousCorrection(lower) &&
-            deterministicText == rawText.trimmingCharacters(in: .whitespacesAndNewlines) {
+        if containsAmbiguousCorrection(lower) {
             return .modelEligible
         }
 
@@ -326,13 +359,10 @@ enum CleanupPolicyRouter {
     }
 
     private static func containsAmbiguousCorrection(_ text: String) -> Bool {
-        [
-            " no actually ",
-            " no wait ",
-            " sorry ",
-            " i mean ",
-            " start over "
-        ].contains { text.contains($0) }
+        text.range(
+            of: #"\b(no[\s,]+actually|no[\s,]+wait|sorry|i mean|start over)\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
     }
 }
 

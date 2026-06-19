@@ -65,6 +65,10 @@ actor TranscriptionCoordinator {
             transcription: transcription,
             context: cleanupContext
         )
+        if let cleanupError = cleanup.blockingError {
+            logger.error("Transcript cleanup blocked delivery: \(cleanupError.localizedDescription)")
+            throw cleanupError
+        }
 
         return DictationPipelineResult(
             finalText: cleanup.finalText,

@@ -109,4 +109,46 @@ final class TranscriptPostProcessorTests: XCTestCase {
         XCTAssertEqual(result.fallbackReason, .deterministicOnly)
         XCTAssertNil(result.modelID)
     }
+
+    func testAmbiguousCorrectionWithPunctuationRequiresModel() {
+        let rawText = "Send this to Alex. No, actually send it to Jordan before lunch."
+        let context = CleanupContextSnapshot(
+            profile: .prose,
+            bundleIdentifier: nil,
+            appName: nil,
+            isTerminalApp: false,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let route = CleanupPolicyRouter.route(
+            rawText: rawText,
+            deterministicText: rawText,
+            context: context
+        )
+
+        XCTAssertEqual(route, .modelEligible)
+    }
+
+    func testCloudTranscriptionStillBlocksWhenLocalCleanupModelIsUnavailable() async {
+        let processor = TranscriptPostProcessor(modelRegistry: CleanupModelRegistry())
+        let transcription = TranscriptionProviderResult(
+            rawText: "Send this to Alex. No, actually send it to Jordan before lunch.",
+            metadata: TranscriptionMetadata(provider: .cloud, speechModelID: "whisper-1", language: "en")
+        )
+        let context = CleanupContextSnapshot(
+            profile: .prose,
+            bundleIdentifier: nil,
+            appName: nil,
+            isTerminalApp: false,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let result = await processor.process(transcription: transcription, context: context)
+
+        XCTAssertEqual(result.route, .modelEligible)
+        XCTAssertEqual(result.fallbackReason, .modelUnavailable)
+        XCTAssertEqual(result.blockingError, .modelUnavailable)
+    }
 }
