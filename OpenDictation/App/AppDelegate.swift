@@ -386,6 +386,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         sm.onStartRecording = { [weak self] in
             guard let self = self else { return }
+
+            Task {
+                let context = await MainActor.run { sm.currentContext }
+                await TranscriptPostProcessor.shared.prepareForRecording(context: context)
+            }
             
             // Check microphone permission first (deferred until user actually tries to record)
             guard let pm = self.permissionsManager else { return }
@@ -448,7 +453,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 
                 do {
                     // Capture state machine reference again inside Task if needed, but it's captured outside
-                    let text = try await TranscriptionCoordinator.shared.transcribe(audioURL: audioURL, context: context)
+                    let result = try await TranscriptionCoordinator.shared.transcribePipeline(
+                        audioURL: audioURL,
+                        context: context
+                    )
                     
                     // Check if task was cancelled
                     guard !Task.isCancelled else { return }
@@ -457,12 +465,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         if let historyEntryID {
                             self?.dictationHistoryService?.markTranscriptionSucceeded(
                                 id: historyEntryID,
-                                text: text
+                                text: result.finalText,
+                                cleanupMetadata: CleanupHistoryMetadata(result: result.cleanup)
                             )
                             self?.currentHistoryEntryID = nil
                             self?.activeHistoryEntryID = historyEntryID
                         }
-                        stateMachine?.send(.transcriptionCompleted(text: text))
+                        stateMachine?.send(.transcriptionCompleted(text: result.finalText))
                         self?.activeHistoryEntryID = nil
                     }
                 } catch {

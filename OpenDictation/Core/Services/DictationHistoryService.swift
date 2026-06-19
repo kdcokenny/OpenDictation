@@ -28,6 +28,7 @@ struct DictationHistoryEntry: Identifiable, Equatable {
     var transcriptionStatus: TranscriptionStatus
     var deliveryStatus: DeliveryStatus
     var lastTranscript: String?
+    var cleanupMetadata: CleanupHistoryMetadata?
 
     var transcript: String? {
         if case .succeeded(let text) = transcriptionStatus {
@@ -49,6 +50,24 @@ struct DictationHistoryEntry: Identifiable, Equatable {
         guard !isTranscribing else { return false }
         guard let audioURL else { return false }
         return FileManager.default.fileExists(atPath: audioURL.path)
+    }
+}
+
+struct CleanupHistoryMetadata: Equatable {
+    let route: CleanupRoute
+    let modelID: String?
+    let promptVersion: String?
+    let fallbackReason: CleanupFallbackReason?
+    let validationDecision: CleanupValidationDecision
+    let latencyMilliseconds: Int
+
+    init(result: CleanupResult) {
+        self.route = result.route
+        self.modelID = result.modelID
+        self.promptVersion = result.promptVersion
+        self.fallbackReason = result.fallbackReason
+        self.validationDecision = result.validationDecision
+        self.latencyMilliseconds = result.latencyMilliseconds
     }
 }
 
@@ -128,7 +147,8 @@ final class DictationHistoryService: ObservableObject {
             context: context,
             transcriptionStatus: .pending,
             deliveryStatus: .notAttempted,
-            lastTranscript: nil
+            lastTranscript: nil,
+            cleanupMetadata: nil
         )
 
         entries.insert(entry, at: 0)
@@ -145,7 +165,11 @@ final class DictationHistoryService: ObservableObject {
         }
     }
 
-    func markTranscriptionSucceeded(id: UUID, text: String) {
+    func markTranscriptionSucceeded(
+        id: UUID,
+        text: String,
+        cleanupMetadata: CleanupHistoryMetadata? = nil
+    ) {
         updateEntry(id: id) { entry in
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             entry.expiresAt = now().addingTimeInterval(timeToLive)
@@ -155,6 +179,7 @@ final class DictationHistoryService: ObservableObject {
                 entry.lastTranscript = trimmed
             }
             entry.transcriptionStatus = trimmed.isEmpty ? .empty : .succeeded(trimmed)
+            entry.cleanupMetadata = cleanupMetadata
         }
     }
 

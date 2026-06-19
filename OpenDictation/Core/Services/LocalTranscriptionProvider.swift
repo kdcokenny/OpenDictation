@@ -27,6 +27,12 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
     
     /// Transcribes the audio file at the given URL using the local Whisper model.
     func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
+        let result = try await transcribeResult(audioURL: audioURL, context: context)
+        return TranscriptionOutputFilter.filter(result.rawText)
+    }
+
+    /// Transcribes audio and returns raw provider metadata for the dictation pipeline.
+    func transcribeResult(audioURL: URL, context: ContextProfile) async throws -> TranscriptionProviderResult {
         // Get selected model from ModelManager, with fallback to any available model
         let modelManager = await ModelManager.shared
         
@@ -90,13 +96,17 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
         
         // Get result
         let rawText = await modelContext.getTranscription()
-        
-        logger.info("Transcription complete: \(rawText.prefix(50))...")
-        
-        // Apply output filter to remove hallucinations and filler words
-        let filteredText = TranscriptionOutputFilter.filter(rawText)
-        
-        return filteredText
+
+        logger.info("Transcription complete")
+
+        return TranscriptionProviderResult(
+            rawText: rawText,
+            metadata: TranscriptionMetadata(
+                provider: .local,
+                speechModelID: selectedModel.name,
+                language: language
+            )
+        )
     }
     
     // MARK: - Model Management

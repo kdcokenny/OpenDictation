@@ -1,0 +1,14 @@
+{
+  "passes": 2,
+  "checks": 146,
+  "passed": 146,
+  "total": 146,
+  "fast_path_checks": 126,
+  "fallback_checks": 0,
+  "model_checks": 20,
+  "median_elapsed_s": 0.0,
+  "model_median_elapsed_s": 8.986,
+  "model_p95_elapsed_s": 10.877,
+  "max_elapsed_s": 11.208,
+  "failures": []
+}

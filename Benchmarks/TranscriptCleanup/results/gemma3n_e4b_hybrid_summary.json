@@ -1,0 +1,44 @@
+{
+  "model": "mlx-community/gemma-3n-E4B-it-lm-4bit",
+  "passed": 73,
+  "total": 73,
+  "fast_path": 63,
+  "fallback": 0,
+  "median_elapsed_s": 0.0,
+  "max_elapsed_s": 13.153,
+  "max_peak_memory_gb": 4.74,
+  "by_context": {
+    "code": {
+      "passed": 10,
+      "total": 10,
+      "fast_path": 10,
+      "fallback": 0,
+      "median_elapsed_s": 0.0,
+      "p95_elapsed_s": 0.0
+    },
+    "email": {
+      "passed": 4,
+      "total": 4,
+      "fast_path": 4,
+      "fallback": 0,
+      "median_elapsed_s": 0.0,
+      "p95_elapsed_s": 0.0
+    },
+    "prose": {
+      "passed": 51,
+      "total": 51,
+      "fast_path": 41,
+      "fallback": 0,
+      "median_elapsed_s": 0.0,
+      "p95_elapsed_s": 11.85
+    },
+    "terminal": {
+      "passed": 8,
+      "total": 8,
+      "fast_path": 8,
+      "fallback": 0,
+      "median_elapsed_s": 0.0,
+      "p95_elapsed_s": 0.0
+    }
+  }
+}

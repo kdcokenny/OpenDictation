@@ -43,15 +43,34 @@ actor TranscriptionCoordinator {
     ///   - context: The pre-captured context profile
     /// - Returns: The transcribed text
     func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
+        try await transcribePipeline(audioURL: audioURL, context: context).finalText
+    }
+
+    /// Runs transcription and local transcript cleanup as one pipeline.
+    /// Cleanup never streams partial model output into the delivered text.
+    func transcribePipeline(audioURL: URL, context: ContextProfile) async throws -> DictationPipelineResult {
         let mode = currentMode
         logger.info("Transcribing with \(mode.rawValue) mode, context: \(String(describing: context))")
-        
+
+        let transcription: TranscriptionProviderResult
         switch mode {
         case .local:
-            return try await localProvider.transcribe(audioURL: audioURL, context: context)
+            transcription = try await localProvider.transcribeResult(audioURL: audioURL, context: context)
         case .cloud:
-            return try await cloudProvider.transcribe(audioURL: audioURL, context: context)
+            transcription = try await cloudProvider.transcribeResult(audioURL: audioURL, context: context)
         }
+
+        let cleanupContext = CleanupContextSnapshot.capture(profile: context)
+        let cleanup = await TranscriptPostProcessor.shared.process(
+            transcription: transcription,
+            context: cleanupContext
+        )
+
+        return DictationPipelineResult(
+            finalText: cleanup.finalText,
+            transcription: transcription,
+            cleanup: cleanup
+        )
     }
     
     // MARK: - Validation

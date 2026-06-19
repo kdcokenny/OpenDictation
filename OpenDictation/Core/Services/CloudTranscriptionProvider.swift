@@ -158,6 +158,12 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
     /// - Returns: The transcribed text.
     /// - Throws: `TranscriptionError` if transcription fails.
     func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
+        let result = try await transcribeResult(audioURL: audioURL, context: context)
+        return Self.cleanTranscriptionText(result.rawText)
+    }
+
+    /// Transcribes audio and returns raw provider metadata for the dictation pipeline.
+    func transcribeResult(audioURL: URL, context: ContextProfile) async throws -> TranscriptionProviderResult {
         // Get API key from the configured credential source.
         let apiKey = apiKeyProvider()?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -250,10 +256,7 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
             whisperResponse = try JSONDecoder().decode(WhisperResponse.self, from: data)
         } catch {
             logger.error("Failed to decode response: \(error.localizedDescription)")
-            // Log raw response for debugging
-            if let rawResponse = String(data: data, encoding: .utf8) {
-                logger.debug("Raw response: \(rawResponse)")
-            }
+            logger.debug("Transcription response decode failed for \(data.count) bytes")
             throw TranscriptionError.invalidResponse
         }
         
@@ -263,10 +266,16 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
             throw TranscriptionError.noTranscriptionReturned
         }
         
-        logger.info("Transcription successful: \(whisperResponse.text.prefix(50))...")
-        
-        // Clean and return text
-        return Self.cleanTranscriptionText(whisperResponse.text)
+        logger.info("Transcription successful")
+
+        return TranscriptionProviderResult(
+            rawText: whisperResponse.text,
+            metadata: TranscriptionMetadata(
+                provider: .cloud,
+                speechModelID: modelName,
+                language: languageCode.isEmpty ? nil : languageCode
+            )
+        )
     }
 
     // MARK: - Upload Retry
