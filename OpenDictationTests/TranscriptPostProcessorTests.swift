@@ -105,6 +105,42 @@ final class TranscriptPostProcessorTests: XCTestCase {
         XCTAssertEqual(output, "Ask Omar to send the numbers tomorrow morning after stand-up.")
     }
 
+    func testNoWaitCorrectionRestoresSingularObjectWithPunctuation() {
+        let context = CleanupContextSnapshot(
+            profile: .prose,
+            bundleIdentifier: nil,
+            appName: nil,
+            isTerminalApp: false,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let output = DeterministicTranscriptCleaner.clean(
+            "I was going to ask Priya to send the invoice today. No wait, ask Mateo to send it after Finance reviews it.",
+            context: context
+        )
+
+        XCTAssertEqual(output, "Ask Mateo to send the invoice after Finance reviews it.")
+    }
+
+    func testNoWaitCorrectionRestoresSingularObjectWithUnlistedNames() {
+        let context = CleanupContextSnapshot(
+            profile: .prose,
+            bundleIdentifier: nil,
+            appName: nil,
+            isTerminalApp: false,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let output = DeterministicTranscriptCleaner.clean(
+            "I was going to ask Leah to send the contract today. No wait, ask Samir to send it after Legal signs it.",
+            context: context
+        )
+
+        XCTAssertEqual(output, "Ask Samir to send the contract after Legal signs it.")
+    }
+
     func testPostProcessorBlocksProseWhenModelIsUnavailable() async {
         let processor = TranscriptPostProcessor(modelRegistry: CleanupModelRegistry())
         let transcription = TranscriptionProviderResult(
@@ -157,6 +193,37 @@ final class TranscriptPostProcessorTests: XCTestCase {
         XCTAssertEqual(result.validationDecision, .accepted)
         XCTAssertNil(result.fallbackReason)
         XCTAssertEqual(result.modelID, "stub-cleanup-model")
+    }
+
+    func testPostProcessorRestoresSingularObjectWhenModelLeavesCorrection() async {
+        let registry = CleanupModelRegistry()
+        await registry.installRunner(
+            StubCleanupModelRunner(
+                output: "I was going to ask Priya to send the invoice today. No wait, ask Mateo to send it after finance reviews it."
+            )
+        )
+        await registry.prepareForRecording()
+
+        let processor = TranscriptPostProcessor(modelRegistry: registry)
+        let transcription = TranscriptionProviderResult(
+            rawText: "I was going to ask Priya to send the invoice today. No wait, ask Mateo to send it after finance reviews it.",
+            metadata: TranscriptionMetadata(provider: .local, speechModelID: "test-model", language: "en")
+        )
+        let context = CleanupContextSnapshot(
+            profile: .prose,
+            bundleIdentifier: nil,
+            appName: nil,
+            isTerminalApp: false,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let result = await processor.process(transcription: transcription, context: context)
+
+        XCTAssertEqual(result.finalText, "Ask Mateo to send the invoice after finance reviews it.")
+        XCTAssertEqual(result.route, .modelEligible)
+        XCTAssertEqual(result.validationDecision, .accepted)
+        XCTAssertNil(result.fallbackReason)
     }
 
     func testPostProcessorRestoresNamedPersonWhenModelLeavesPronoun() async {
@@ -225,6 +292,88 @@ final class TranscriptPostProcessorTests: XCTestCase {
         XCTAssertEqual(result.route, .formatting)
         XCTAssertEqual(result.validationDecision, .accepted)
         XCTAssertNil(result.fallbackReason)
+    }
+
+    func testPostProcessorFormatsCheckListWithLiteralScratchThatItem() async {
+        let registry = CleanupModelRegistry()
+        await registry.installRunner(
+            StubCleanupModelRunner(
+                output: """
+                - Test correction phrases
+                - Test email formatting
+                - Test developer dictation. Fourth write the words scratch that literally
+                """
+            )
+        )
+        await registry.prepareForRecording()
+
+        let processor = TranscriptPostProcessor(modelRegistry: registry)
+        let transcription = TranscriptionProviderResult(
+            rawText: "make this a check list first test correction phrases second test email formatting third test developer dictation fourth write the words scratch that literally",
+            metadata: TranscriptionMetadata(provider: .local, speechModelID: "test-model", language: "en")
+        )
+        let context = CleanupContextSnapshot(
+            profile: .prose,
+            bundleIdentifier: nil,
+            appName: nil,
+            isTerminalApp: false,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let result = await processor.process(transcription: transcription, context: context)
+
+        XCTAssertEqual(
+            result.finalText,
+            """
+            - Test correction phrases
+            - Test email formatting
+            - Test developer dictation
+            - Write the words scratch that literally
+            """
+        )
+        XCTAssertEqual(result.route, .formatting)
+        XCTAssertEqual(result.validationDecision, .accepted)
+        XCTAssertNil(result.fallbackReason)
+    }
+
+    func testTerminalXcodebuildSpokenFlags() {
+        let context = CleanupContextSnapshot(
+            profile: .code,
+            bundleIdentifier: "com.apple.Terminal",
+            appName: "Terminal",
+            isTerminalApp: true,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let output = DeterministicTranscriptCleaner.clean(
+            "run xcodebuild test scheme OpenDictation destination platform equals macOS and only test the transcript post processor tests",
+            context: context
+        )
+
+        XCTAssertEqual(
+            output,
+            "run xcodebuild test -scheme OpenDictation -destination platform=macOS and only test the TranscriptPostProcessorTests"
+        )
+    }
+
+    func testTerminalXcodebuildSpokenFlagsAreProjectAgnostic() {
+        let context = CleanupContextSnapshot(
+            profile: .code,
+            bundleIdentifier: "com.apple.Terminal",
+            appName: "Terminal",
+            isTerminalApp: true,
+            isKnownCodeEditor: false,
+            language: "en"
+        )
+
+        let output = DeterministicTranscriptCleaner.clean(
+            "run xcodebuild test scheme SampleApp destination platform equals macOS",
+            context: context
+        )
+
+        XCTAssertEqual(output, "run xcodebuild test -scheme SampleApp -destination platform=macOS")
     }
 
     func testPostProcessorPreservesMeaningfulFillerWordWhenModelDropsIt() async {

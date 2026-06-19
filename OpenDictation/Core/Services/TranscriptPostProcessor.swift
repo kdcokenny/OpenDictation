@@ -359,6 +359,7 @@ enum CleanupPolicyRouter {
 
         if lower.contains("bullet list") ||
             lower.contains("checklist") ||
+            lower.contains("check list") ||
             lower.contains("new paragraph") ||
             lower.contains("new line") {
             return .formatting
@@ -529,11 +530,7 @@ enum DeterministicTranscriptCleaner {
 
         var result = text
 
-        result = result.replacingOccurrences(
-            of: #"\b(?:i was going to\s+)?ask\s+[A-Za-z]+\s+to\s+send\s+the\s+(.+?)\s+(?:today|tonight|tomorrow)\s+no[\s,]+(?:wait|way)[\s,]+ask\s+([A-Za-z]+)\s+to\s+send\s+them\s+(.+)$"#,
-            with: "Ask $2 to send the $1 $3",
-            options: [.regularExpression, .caseInsensitive]
-        )
+        result = restoreAbandonedSendObject(result)
         result = result.replacingOccurrences(
             of: #"\b(?:can you\s+)?tell\s+([A-Za-z]+)\b.+?\b(?:actually\s+)?scratch that[.!?,;:]?\s+tell\s+(?:him|her)\b"#,
             with: "Tell $1",
@@ -590,6 +587,37 @@ enum DeterministicTranscriptCleaner {
                 with: "",
                 options: [.regularExpression, .caseInsensitive]
             )
+    }
+
+    private static func restoreAbandonedSendObject(_ text: String) -> String {
+        let pattern = #"\b(?:i was going to\s+)?ask\s+[A-Za-z]+\s+to\s+send\s+the\s+(.+?)\s+(?:today|tonight|tomorrow)[.!?,;:]?\s+no[\s,]+(?:wait|way)[.!?,;:]?[\s,]+ask\s+([A-Za-z]+)\s+to\s+send\s+(?:them|it)\s+(.+)$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return text
+        }
+
+        let textRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, range: textRange),
+              match.numberOfRanges == 4,
+              let fullRange = Range(match.range(at: 0), in: text),
+              let objectRange = Range(match.range(at: 1), in: text),
+              let recipientRange = Range(match.range(at: 2), in: text),
+              let remainderRange = Range(match.range(at: 3), in: text) else {
+            return text
+        }
+
+        let object = String(text[objectRange])
+            .trimmingCharacters(in: CharacterSet(charactersIn: " .,!?:;"))
+        let recipient = capitalizeFirstLetter(
+            String(text[recipientRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        let remainder = String(text[remainderRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var result = text
+        result.replaceSubrange(
+            fullRange,
+            with: "Ask \(recipient) to send the \(object) \(remainder)"
+        )
+        return result
     }
 
     private static func removeSafeFillers(_ text: String) -> String {
@@ -741,7 +769,9 @@ enum DeterministicTranscriptCleaner {
 
     private static func normalizeExplicitFormatting(_ rawText: String) -> String? {
         let lowerRaw = rawText.lowercased()
-        if lowerRaw.contains("bullet list") || lowerRaw.contains("checklist") {
+        if lowerRaw.contains("bullet list") ||
+            lowerRaw.contains("checklist") ||
+            lowerRaw.contains("check list") {
             if let groups = firstMatchGroups(
                 pattern: #"\bfirst\s+(.+?)[,.;:]?\s+second\s+(.+?)[,.;:]?\s+third\s+(.+?)[,.;:]?\s+fourth\s+(.+)$"#,
                 in: rawText
@@ -965,8 +995,18 @@ enum DeterministicTranscriptCleaner {
             options: [.regularExpression, .caseInsensitive]
         )
         result = result.replacingOccurrences(
-            of: #"\bOpenDictation-destination\b"#,
-            with: "OpenDictation -destination",
+            of: #"\bxcodebuild\s+test\s+scheme\s+([A-Za-z0-9_.-]+)\s+destination\b"#,
+            with: "xcodebuild test -scheme $1 -destination",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        result = result.replacingOccurrences(
+            of: #"\bxcodebuild\s+test\s+scheme\b"#,
+            with: "xcodebuild test -scheme",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        result = result.replacingOccurrences(
+            of: #"\b([A-Za-z0-9_.-]+)-destination\b"#,
+            with: "$1 -destination",
             options: [.regularExpression]
         )
         result = result.replacingOccurrences(
