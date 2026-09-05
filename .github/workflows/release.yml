@@ -245,7 +245,7 @@ jobs:
 
             The DMG has a valid Sparkle EdDSA signature. Builds marked as ad hoc signed are not notarized and will not pass normal Gatekeeper distribution checks.
 
-      - name: Update appcast from local artifact metadata
+      - name: Commit appcast to current main
         env:
           BUILD_NUMBER: ${{ github.run_number }}
           DMG_SIZE: ${{ steps.sparkle.outputs.size }}
@@ -253,56 +253,54 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          export PUB_DATE="$(date -R)"
 
-          python3 <<'PYTHON'
-          import os
-          import xml.etree.ElementTree as ET
+          appcast_worktree="$RUNNER_TEMP/appcast-main"
+          if [[ -e "$appcast_worktree" ]]; then
+            echo "Appcast worktree path already exists: $appcast_worktree" >&2
+            exit 1
+          fi
 
-          sparkle_namespace = "http://www.andymatuschak.org/xml-namespaces/sparkle"
-          ET.register_namespace("sparkle", sparkle_namespace)
+          git fetch --no-tags origin main
+          git worktree add --detach "$appcast_worktree" origin/main
+          trap 'git worktree remove --force "$appcast_worktree" 2>/dev/null || true' EXIT
+          git -C "$appcast_worktree" config user.name 'github-actions[bot]'
+          git -C "$appcast_worktree" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-          tree = ET.parse("appcast.xml")
-          channel = tree.getroot().find("channel")
-          if channel is None:
-              raise SystemExit("appcast.xml has no channel element")
+          publication_date="$(date -R)"
+          download_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/OpenDictation.dmg"
+          max_attempts=3
 
-          version = os.environ["VERSION"]
-          version_element = f"{{{sparkle_namespace}}}shortVersionString"
-          for existing_item in channel.findall("item"):
-              existing_version = existing_item.find(version_element)
-              if existing_version is not None and existing_version.text == version:
-                  channel.remove(existing_item)
+          for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+            git fetch --no-tags origin main
+            git -C "$appcast_worktree" reset --hard origin/main
 
-          item = ET.SubElement(channel, "item")
-          ET.SubElement(item, "title").text = f"Version {version}"
-          ET.SubElement(item, "pubDate").text = os.environ["PUB_DATE"]
-          ET.SubElement(item, f"{{{sparkle_namespace}}}version").text = os.environ["BUILD_NUMBER"]
-          ET.SubElement(item, version_element).text = version
-          ET.SubElement(item, f"{{{sparkle_namespace}}}minimumSystemVersion").text = "14.0"
+            scripts/update-appcast.py \
+              "$appcast_worktree/appcast.xml" \
+              --version "$VERSION" \
+              --build-number "$BUILD_NUMBER" \
+              --publication-date "$publication_date" \
+              --download-url "$download_url" \
+              --signature "$SPARKLE_SIGNATURE" \
+              --size "$DMG_SIZE"
 
-          enclosure = ET.SubElement(item, "enclosure")
-          enclosure.set(
-              "url",
-              f"https://github.com/kdcokenny/OpenDictation/releases/download/v{version}/OpenDictation.dmg",
-          )
-          enclosure.set(f"{{{sparkle_namespace}}}edSignature", os.environ["SPARKLE_SIGNATURE"])
-          enclosure.set("length", os.environ["DMG_SIZE"])
-          enclosure.set("type", "application/octet-stream")
+            git -C "$appcast_worktree" add appcast.xml
+            if git -C "$appcast_worktree" diff --cached --quiet; then
+              echo "Appcast already contains this release"
+              exit 0
+            fi
 
-          ET.indent(tree, space="  ")
-          tree.write("appcast.xml", encoding="utf-8", xml_declaration=True)
-          PYTHON
+            git -C "$appcast_worktree" commit \
+              -m "chore: update appcast for $GITHUB_REF_NAME"
+            if git -C "$appcast_worktree" push origin HEAD:main; then
+              exit 0
+            fi
 
-      - name: Commit appcast
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add appcast.xml
-          git diff --cached --quiet && { echo "Appcast already contains this release"; exit 0; }
-          git commit -m 'chore: update appcast for v${{ steps.release.outputs.version }}'
-          git push origin HEAD:main
+            if [[ $attempt -eq $max_attempts ]]; then
+              echo "Appcast push failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            echo "Appcast push failed; refreshing main and retrying ($attempt/$max_attempts)"
+          done
 
       - name: Publish GitHub release
         env:

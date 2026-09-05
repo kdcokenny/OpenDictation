@@ -2,7 +2,7 @@
 
 Pull requests build an unsigned Release app through `make ci`. No signing credentials are available to pull request jobs. Maintainers can also run `make dmg` to create an ad hoc signed DMG for local testing. Neither path publishes an update.
 
-Pushing a `v<version>` tag starts `.github/workflows/release.yml`. The workflow builds from scratch, verifies the bundled resources, creates `OpenDictation.dmg`, signs it for Sparkle, stages a draft GitHub release, updates `appcast.xml`, and then publishes the release.
+Pushing a `v<version>` tag starts `.github/workflows/release.yml`. The workflow builds the tagged commit from scratch, verifies the bundled resources, creates `OpenDictation.dmg`, signs it for Sparkle, and stages a draft GitHub release. It then checks out the latest `main` in a separate worktree, adds the release to the existing `appcast.xml`, and publishes the draft after the appcast commit reaches `main`.
 
 ## Required Sparkle secret
 
@@ -48,4 +48,4 @@ git push origin v1.2.0
 
 Use a SemVer prerelease suffix such as `v1.2.0-beta.1` when appropriate. After the workflow finishes, verify the GitHub release asset, its signing note, and the new `appcast.xml` entry.
 
-The tagged commit must be in the current `main` history. Commits added to `main` after the tag was created do not invalidate the release.
+The tagged commit must be in the current `main` history. If `main` advances while the release runs, the workflow reapplies the appcast update to the latest feed and retries the normal fast-forward push up to three times. It never force-pushes. If all attempts fail, the GitHub release remains a draft.

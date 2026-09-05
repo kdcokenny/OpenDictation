@@ -57,10 +57,53 @@ final class ModelManagerTests: XCTestCase {
         try Data("short".utf8).write(to: invalidModel)
 
         let manager = ModelManager(modelsDirectory: tempDirectory, models: [bundledModel])
-        await manager.waitForInitialScan()
+        try await manager.waitForInitialScan()
 
         XCTAssertTrue(manager.downloadedModels.isEmpty)
         XCTAssertNotNil(manager.downloadErrors[bundledModel.name])
+    }
+
+    func testCancellingInitialScanWaitLeavesSharedScanRunning() async throws {
+        let scanGate = BlockingOperationGate()
+        let manager = ModelManager(
+            modelsDirectory: tempDirectory,
+            models: [bundledModel],
+            modelScanner: { _, _ in
+                scanGate.pause()
+                return ModelDirectoryScan(
+                    downloadedModels: [],
+                    validationErrors: [:],
+                    unrecognizedFiles: [],
+                    directoryError: nil
+                )
+            }
+        )
+        XCTAssertTrue(scanGate.waitUntilStarted())
+
+        let waiterStarted = expectation(description: "Initial scan waiter started")
+        let waiting = Task { @MainActor in
+            waiterStarted.fulfill()
+            try await manager.waitForInitialScan()
+        }
+        await fulfillment(of: [waiterStarted], timeout: 1)
+        waiting.cancel()
+
+        var observedCancellation = false
+        do {
+            try await waiting.value
+        } catch is CancellationError {
+            observedCancellation = true
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        let scanContinuedAfterWaitCancellation = !scanGate.hasFinished
+        scanGate.resume()
+        try await manager.waitForInitialScan()
+
+        XCTAssertTrue(observedCancellation)
+        XCTAssertTrue(scanContinuedAfterWaitCancellation)
+        XCTAssertTrue(scanGate.hasFinished)
     }
     
     func testLoadDownloadedModels() async throws {
@@ -69,7 +112,7 @@ final class ModelManagerTests: XCTestCase {
         try validModelContents.write(to: modelFile)
         
         // When
-        await sut.loadDownloadedModels()
+        try await sut.loadDownloadedModels()
         
         // Then
         XCTAssertEqual(sut.downloadedModels.count, 1)
@@ -83,7 +126,7 @@ final class ModelManagerTests: XCTestCase {
         let path = tempDirectory.appendingPathComponent(model.filename)
         try validModelContents.write(to: path)
         
-        await sut.loadDownloadedModels()
+        try await sut.loadDownloadedModels()
         XCTAssertTrue(sut.isDownloaded(model))
     }
     
@@ -92,7 +135,7 @@ final class ModelManagerTests: XCTestCase {
         let bundled = bundledModel
         let bundledPath = tempDirectory.appendingPathComponent(bundled.filename)
         try validModelContents.write(to: bundledPath)
-        await sut.loadDownloadedModels()
+        try await sut.loadDownloadedModels()
         
         // Set selected model to something non-existent
         sut.selectedModelName = "non-existent-model"
@@ -127,7 +170,7 @@ final class ModelManagerTests: XCTestCase {
         let path = tempDirectory.appendingPathComponent(bundledModel.filename)
         try Data("short".utf8).write(to: path)
 
-        await sut.loadDownloadedModels()
+        try await sut.loadDownloadedModels()
 
         XCTAssertTrue(sut.downloadedModels.isEmpty)
         XCTAssertNotNil(sut.downloadErrors[bundledModel.name])
@@ -189,23 +232,37 @@ final class ModelManagerTests: XCTestCase {
         }
     }
 
-    func testAsyncValidatorPropagatesCancellation() async throws {
+    func testAsyncValidatorCancelsDuringHashing() async throws {
         let path = tempDirectory.appendingPathComponent(bundledModel.filename)
         try validModelContents.write(to: path)
+        let hashGate = BlockingOperationGate()
+        let model = bundledModel
 
-        let validation = Task {
-            try await ModelFileValidator.validateAsync(fileAt: path, for: bundledModel)
+        let validation = Task.detached {
+            try await ModelFileValidator.validateAsync(
+                fileAt: path,
+                for: model,
+                onHashChunk: { hashGate.pause() }
+            )
         }
+        XCTAssertTrue(hashGate.waitUntilStarted())
         validation.cancel()
+        let cancellationHappenedDuringHashing = !hashGate.hasFinished
+        hashGate.resume()
 
+        var observedCancellation = false
         do {
             try await validation.value
             XCTFail("Expected validation to be cancelled")
         } catch is CancellationError {
-            // Expected.
+            observedCancellation = true
         } catch {
             XCTFail("Expected CancellationError, got \(error)")
         }
+
+        XCTAssertTrue(observedCancellation)
+        XCTAssertTrue(cancellationHappenedDuringHashing)
+        XCTAssertTrue(hashGate.hasFinished)
     }
 
     func testResponseValidatorRejectsHTTPError() throws {
@@ -244,5 +301,30 @@ final class ModelManagerTests: XCTestCase {
                 return XCTFail("Expected responseSizeMismatch, got \(error)")
             }
         }
+    }
+}
+
+private final class BlockingOperationGate: @unchecked Sendable {
+    private let started = DispatchSemaphore(value: 0)
+    private let proceed = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var finished = false
+
+    var hasFinished: Bool {
+        lock.withLock { finished }
+    }
+
+    func pause() {
+        started.signal()
+        _ = proceed.wait(timeout: .now() + 5)
+        lock.withLock { finished = true }
+    }
+
+    func waitUntilStarted() -> Bool {
+        started.wait(timeout: .now() + 5) == .success
+    }
+
+    func resume() {
+        proceed.signal()
     }
 }

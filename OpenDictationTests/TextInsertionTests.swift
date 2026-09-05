@@ -160,6 +160,44 @@ final class TextInsertionTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "Dictated Text")
     }
 
+    func testPreservesClipboardWrittenDuringPasteSimulation() {
+        let pasteboard = pasteboard
+        pasteboard.clearContents()
+        pasteboard.setString("Original Content", forType: .string)
+        let service = TextInsertionService(
+            accessibilityChecker: MockAccessibilityChecker(isGranted: true),
+            pasteSimulator: {
+                pasteboard.clearContents()
+                pasteboard.setString("Dictated Text", forType: .string)
+                return true
+            }
+        )
+
+        XCTAssertEqual(service.insertText("Dictated Text"), .inserted)
+        service.restoreClipboard()
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "Dictated Text")
+    }
+
+    func testFailedPasteDoesNotOverwriteANewerClipboardWrite() {
+        let pasteboard = pasteboard
+        pasteboard.clearContents()
+        pasteboard.setString("Original Content", forType: .string)
+        let service = TextInsertionService(
+            accessibilityChecker: MockAccessibilityChecker(isGranted: true),
+            pasteSimulator: {
+                pasteboard.clearContents()
+                pasteboard.setString("User Copied", forType: .string)
+                return false
+            }
+        )
+
+        XCTAssertEqual(service.insertText("Dictated Text"), .failed("Failed to simulate paste."))
+        service.restoreClipboard()
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "User Copied")
+    }
+
     private func waitForPasteboardString(
         _ expected: String,
         timeout: TimeInterval

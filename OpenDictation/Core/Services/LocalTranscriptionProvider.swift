@@ -29,7 +29,7 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
     func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
         // Use the model the user selected. A missing selection is an actionable error.
         let modelManager = await ModelManager.shared
-        await modelManager.waitForInitialScan()
+        try await modelManager.waitForInitialScan()
         try Task.checkCancellation()
         
         guard let selectedModel = await modelManager.selectedModel else {
@@ -132,7 +132,7 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
     /// Loads the selected installed model without changing the selection or downloading.
     func prewarmIfInstalled() async throws {
         let modelManager = await ModelManager.shared
-        await modelManager.waitForInitialScan()
+        try await modelManager.waitForInitialScan()
         try Task.checkCancellation()
         guard let selectedModel = await modelManager.selectedModel else {
             throw WhisperError.modelNotFound

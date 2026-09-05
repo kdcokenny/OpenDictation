@@ -52,6 +52,7 @@ final class ModelManager: ObservableObject {
     private var activeDownloaders: [String: ModelDownloader] = [:]
 
     private let models: [WhisperModel]
+    private let modelScanner: @Sendable (URL, [WhisperModel]) -> ModelDirectoryScan
     private var initialModelScanTask: Task<ModelDirectoryScan, Never>?
     private var didFinishInitialModelScan = false
     private var modelStateGeneration = 0
@@ -70,9 +71,13 @@ final class ModelManager: ObservableObject {
     
     internal init(
         modelsDirectory: URL? = nil,
-        models: [WhisperModel] = PredefinedModels.all
+        models: [WhisperModel] = PredefinedModels.all,
+        modelScanner: @escaping @Sendable (URL, [WhisperModel]) -> ModelDirectoryScan = { directory, models in
+            ModelDirectoryScanner.scan(directory: directory, models: models)
+        }
     ) {
         self.models = models
+        self.modelScanner = modelScanner
         if let customDir = modelsDirectory {
             self.modelsDirectory = customDir
         } else {
@@ -98,8 +103,9 @@ final class ModelManager: ObservableObject {
         removeOrphanedPartialFiles()
         let directory = self.modelsDirectory
         let modelCatalog = self.models
+        let scanner = self.modelScanner
         initialModelScanTask = Task.detached(priority: .utility) {
-            ModelDirectoryScanner.scan(directory: directory, models: modelCatalog)
+            scanner(directory, modelCatalog)
         }
         
         // Start network monitoring for Wi-Fi detection
@@ -225,20 +231,27 @@ final class ModelManager: ObservableObject {
 
     /// Waits until every model discovered at launch has passed size and checksum validation.
     /// Call this before reading model availability for a transcription decision.
-    func waitForInitialScan() async {
-        await finishInitialModelScan()
+    func waitForInitialScan() async throws {
+        try Task.checkCancellation()
+        guard !didFinishInitialModelScan, let task = initialModelScanTask else { return }
+
+        let scan = try await InitialModelScanWaiter.value(of: task)
+        finishInitialModelScan(with: scan)
+        try Task.checkCancellation()
     }
     
     /// Rescans installed models without blocking the main actor on file hashes.
-    func loadDownloadedModels() async {
-        await waitForInitialScan()
+    func loadDownloadedModels() async throws {
+        try await waitForInitialScan()
 
         let directory = modelsDirectory
         let modelCatalog = models
+        let scanner = modelScanner
         let generation = modelStateGeneration
         let scan = await Task.detached(priority: .utility) {
-            ModelDirectoryScanner.scan(directory: directory, models: modelCatalog)
+            scanner(directory, modelCatalog)
         }.value
+        try Task.checkCancellation()
         guard generation == modelStateGeneration else { return }
         apply(scan)
     }
@@ -246,6 +259,10 @@ final class ModelManager: ObservableObject {
     private func finishInitialModelScan() async {
         guard !didFinishInitialModelScan, let task = initialModelScanTask else { return }
         let scan = await task.value
+        finishInitialModelScan(with: scan)
+    }
+
+    private func finishInitialModelScan(with scan: ModelDirectoryScan) {
         guard !didFinishInitialModelScan else { return }
 
         apply(scan)
@@ -287,7 +304,11 @@ final class ModelManager: ObservableObject {
     /// Copies the bundled model from app bundle to Application Support on first launch.
     /// This enables instant first-run experience.
     func setupBundledModelIfNeeded() async {
-        await waitForInitialScan()
+        do {
+            try await waitForInitialScan()
+        } catch {
+            return
+        }
         let bundledModel = self.bundledModel
         
         // Skip only after validating the installed copy.
@@ -343,7 +364,7 @@ final class ModelManager: ObservableObject {
     /// Downloads a model from Hugging Face.
     /// Progress is reported via the `downloadProgress` published property.
     func downloadModel(_ model: WhisperModel) async throws {
-        await waitForInitialScan()
+        try await waitForInitialScan()
         guard let url = URL(string: model.downloadURL),
               url.scheme == "https",
               url.host != nil else {
@@ -484,7 +505,11 @@ final class ModelManager: ObservableObject {
     /// 3. Compare recommended model to current
     /// 4. If different and not downloaded and on Wi-Fi → start silent download
     func checkAndUpgradeIfNeeded() async {
-        await waitForInitialScan()
+        do {
+            try await waitForInitialScan()
+        } catch {
+            return
+        }
 
         // Skip if user has explicitly chosen a model
         guard !isManualModelOverride else {
@@ -587,7 +612,11 @@ final class ModelManager: ObservableObject {
     /// - Returns: Whether the current model supports the language (for UI warnings)
     @discardableResult
     func handleLanguageChange(to languageCode: String) async -> Bool {
-        await waitForInitialScan()
+        do {
+            try await waitForInitialScan()
+        } catch {
+            return false
+        }
         logger.info("[LanguageChange] Language changed to: \(languageCode)")
         
         // Check if current model supports this language
@@ -690,6 +719,56 @@ final class ModelManager: ObservableObject {
 
 // MARK: - Model Validation
 
+private final class InitialModelScanWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<ModelDirectoryScan, Error>?
+    private var result: Result<ModelDirectoryScan, Error>?
+
+    static func value(
+        of task: Task<ModelDirectoryScan, Never>
+    ) async throws -> ModelDirectoryScan {
+        let waiter = InitialModelScanWaiter()
+        Task.detached {
+            let scan = await task.value
+            waiter.resolve(.success(scan))
+        }
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiter.install(continuation)
+            }
+        } onCancel: {
+            waiter.resolve(.failure(CancellationError()))
+        }
+    }
+
+    private func install(
+        _ continuation: CheckedContinuation<ModelDirectoryScan, Error>
+    ) {
+        lock.lock()
+        if let result {
+            lock.unlock()
+            continuation.resume(with: result)
+        } else {
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    private func resolve(_ result: Result<ModelDirectoryScan, Error>) {
+        lock.lock()
+        guard self.result == nil else {
+            lock.unlock()
+            return
+        }
+        self.result = result
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+    }
+}
+
 struct ModelDirectoryScan: Sendable {
     let downloadedModels: [DownloadedModel]
     let validationErrors: [String: String]
@@ -782,9 +861,18 @@ enum ModelValidationError: LocalizedError, Equatable {
 enum ModelFileValidator {
     private static let readChunkSize = 1_048_576
 
-    static func validateAsync(fileAt url: URL, for model: WhisperModel) async throws {
+    static func validateAsync(
+        fileAt url: URL,
+        for model: WhisperModel,
+        onHashChunk: (@Sendable () -> Void)? = nil
+    ) async throws {
         let task = Task.detached(priority: .utility) {
-            try validate(fileAt: url, for: model, checkingCancellation: true)
+            try validate(
+                fileAt: url,
+                for: model,
+                checkingCancellation: true,
+                onHashChunk: onHashChunk
+            )
         }
         return try await withTaskCancellationHandler {
             try await task.value
@@ -795,8 +883,21 @@ enum ModelFileValidator {
 
     static func validate(
         fileAt url: URL,
+        for model: WhisperModel
+    ) throws {
+        try validate(
+            fileAt: url,
+            for: model,
+            checkingCancellation: false,
+            onHashChunk: nil
+        )
+    }
+
+    private static func validate(
+        fileAt url: URL,
         for model: WhisperModel,
-        checkingCancellation: Bool = false
+        checkingCancellation: Bool,
+        onHashChunk: (@Sendable () -> Void)?
     ) throws {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let actualByteCount = (attributes[.size] as? NSNumber)?.int64Value ?? -1
@@ -809,7 +910,8 @@ enum ModelFileValidator {
 
         let actualSHA256 = try sha256(
             fileAt: url,
-            checkingCancellation: checkingCancellation
+            checkingCancellation: checkingCancellation,
+            onHashChunk: onHashChunk
         )
         guard actualSHA256 == model.sha256.lowercased() else {
             throw ModelValidationError.checksumMismatch(
@@ -819,15 +921,17 @@ enum ModelFileValidator {
         }
     }
 
-    static func sha256(
+    private static func sha256(
         fileAt url: URL,
-        checkingCancellation: Bool = false
+        checkingCancellation: Bool,
+        onHashChunk: (@Sendable () -> Void)?
     ) throws -> String {
         let file = try FileHandle(forReadingFrom: url)
         defer { try? file.close() }
 
         var hasher = SHA256()
         while let data = try file.read(upToCount: readChunkSize), !data.isEmpty {
+            onHashChunk?()
             if checkingCancellation {
                 try Task.checkCancellation()
             }

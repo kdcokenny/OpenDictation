@@ -54,7 +54,7 @@ actor TranscriptionCoordinator {
         await releaseInactiveEngines(keeping: engine)
         if engine == .whisper {
             let manager = await ModelManager.shared
-            await manager.waitForInitialScan()
+            try await manager.waitForInitialScan()
             guard await manager.currentModelSupportsLanguage(language) else {
                 throw TranscriptionError.invalidConfiguration("Choose a Whisper model that supports your language in Settings.")
             }
@@ -198,7 +198,7 @@ actor TranscriptionCoordinator {
                         ? nil : "Download \(engine.displayName) in Settings."
                 }
                 let manager = await ModelManager.shared
-                await manager.waitForInitialScan()
+                try await manager.waitForInitialScan()
                 guard await manager.currentModelSupportsLanguage(language) else {
                     return "Choose a Whisper model that supports your language in Settings."
                 }
