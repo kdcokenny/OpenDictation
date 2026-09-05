@@ -78,7 +78,7 @@ final class ModelManagerTests: XCTestCase {
                 )
             }
         )
-        XCTAssertTrue(scanGate.waitUntilStarted())
+        await fulfillment(of: [scanGate.started], timeout: 5)
 
         let waiterStarted = expectation(description: "Initial scan waiter started")
         let waiting = Task { @MainActor in
@@ -245,7 +245,7 @@ final class ModelManagerTests: XCTestCase {
                 onHashChunk: { hashGate.pause() }
             )
         }
-        XCTAssertTrue(hashGate.waitUntilStarted())
+        await fulfillment(of: [hashGate.started], timeout: 5)
         validation.cancel()
         let cancellationHappenedDuringHashing = !hashGate.hasFinished
         hashGate.resume()
@@ -305,7 +305,7 @@ final class ModelManagerTests: XCTestCase {
 }
 
 private final class BlockingOperationGate: @unchecked Sendable {
-    private let started = DispatchSemaphore(value: 0)
+    let started = XCTestExpectation(description: "Background operation started")
     private let proceed = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var finished = false
@@ -315,13 +315,9 @@ private final class BlockingOperationGate: @unchecked Sendable {
     }
 
     func pause() {
-        started.signal()
+        started.fulfill()
         _ = proceed.wait(timeout: .now() + 5)
         lock.withLock { finished = true }
-    }
-
-    func waitUntilStarted() -> Bool {
-        started.wait(timeout: .now() + 5) == .success
     }
 
     func resume() {
