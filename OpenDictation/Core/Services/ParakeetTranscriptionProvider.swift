@@ -15,11 +15,21 @@ actor ParakeetTranscriptionProvider: TranscriptionProvider {
     let version: ParakeetModelVersion
 
     private let logger = Logger.app(category: "ParakeetTranscriptionProvider")
+    private let managerLoader: @Sendable (ParakeetModelVersion) async throws -> AsrManager
     private var asrManager: AsrManager?
     private var managerLoad: ManagerLoad?
 
     init(version: ParakeetModelVersion) {
         self.version = version
+        managerLoader = Self.loadInstalledManager
+    }
+
+    init(
+        version: ParakeetModelVersion,
+        managerLoader: @escaping @Sendable (ParakeetModelVersion) async throws -> AsrManager
+    ) {
+        self.version = version
+        self.managerLoader = managerLoader
     }
 
     func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
@@ -65,19 +75,9 @@ actor ParakeetTranscriptionProvider: TranscriptionProvider {
         }
 
         let version = version
+        let managerLoader = managerLoader
         let loadTask = Task<AsrManager, Error> {
-            let models = try await ParakeetModelManager.shared.modelsIfInstalled(version)
-            try Task.checkCancellation()
-
-            let fluidVersion = version.fluidAudioVersion
-            let config = ASRConfig(
-                tdtConfig: TdtConfig(blankId: fluidVersion.blankId),
-                encoderHiddenSize: fluidVersion.encoderHiddenSize
-            )
-            let manager = AsrManager(config: config)
-            try await manager.loadModels(models)
-            try Task.checkCancellation()
-            return manager
+            try await managerLoader(version)
         }
         let load = ManagerLoad(id: UUID(), task: loadTask)
         managerLoad = load
@@ -129,5 +129,22 @@ actor ParakeetTranscriptionProvider: TranscriptionProvider {
             }
             return language
         }
+    }
+
+    private static func loadInstalledManager(
+        _ version: ParakeetModelVersion
+    ) async throws -> AsrManager {
+        let models = try await ParakeetModelManager.shared.modelsIfInstalled(version)
+        try Task.checkCancellation()
+
+        let fluidVersion = version.fluidAudioVersion
+        let config = ASRConfig(
+            tdtConfig: TdtConfig(blankId: fluidVersion.blankId),
+            encoderHiddenSize: fluidVersion.encoderHiddenSize
+        )
+        let manager = AsrManager(config: config)
+        try await manager.loadModels(models)
+        try Task.checkCancellation()
+        return manager
     }
 }
