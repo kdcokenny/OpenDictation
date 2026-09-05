@@ -334,7 +334,7 @@ final class ModelManager: ObservableObject {
 
         do {
             let temporaryURL = try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
                     downloader.completionHandler = { tempURL, error in
                         if let error {
                             continuation.resume(throwing: error)
