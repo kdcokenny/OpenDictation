@@ -180,12 +180,9 @@ actor WhisperContext {
         }
         
         // Run transcription
-        var success = true
-        samples.withUnsafeBufferPointer { samplesBuffer in
-            if whisper_full(context, params, samplesBuffer.baseAddress, Int32(samplesBuffer.count)) != 0 {
-                logger.error("Failed to run whisper_full")
-                success = false
-            }
+        let success = whisper_full(context, params, samples, Int32(samples.count)) == 0
+        if !success {
+            logger.error("Failed to run whisper_full")
         }
         
         // Clear C strings
