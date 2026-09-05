@@ -2,7 +2,7 @@ import Foundation
 
 /// Represents a downloadable Whisper model for local transcription.
 /// Adapted from VoiceInk/Models/TranscriptionModel.swift
-struct WhisperModel: Identifiable, Equatable, Codable {
+struct WhisperModel: Identifiable, Equatable, Codable, Sendable {
     
     /// Unique identifier
     let id: UUID
@@ -18,6 +18,12 @@ struct WhisperModel: Identifiable, Equatable, Codable {
     
     /// Download URL from Hugging Face
     let downloadURL: String
+
+    /// Expected byte count from the pinned Hugging Face LFS object.
+    let expectedByteCount: Int64
+
+    /// SHA-256 digest from the pinned Hugging Face LFS object.
+    let sha256: String
     
     /// Whether this model supports multiple languages
     let isMultilingual: Bool
@@ -46,10 +52,9 @@ struct WhisperModel: Identifiable, Equatable, Codable {
     /// - Parameter languageCode: ISO 639-1 code (e.g., "en", "es") or "auto"
     /// - Returns: true if model can transcribe this language well
     func supportsLanguage(_ languageCode: String) -> Bool {
-        // "auto" is supported by all models (they'll detect the language)
-        // But for English-only models, auto will still only work for English
-        if languageCode == "auto" {
-            return true  // Let user try auto on any model
+        // Empty is the legacy spelling of auto-detect.
+        if languageCode.isEmpty || languageCode == "auto" {
+            return true
         }
         return supportedLanguages.keys.contains(languageCode)
     }
@@ -63,12 +68,13 @@ struct WhisperModel: Identifiable, Equatable, Codable {
     // MARK: - Codable
     
     enum CodingKeys: String, CodingKey {
-        case id, name, displayName, size, downloadURL, isMultilingual, description, isBundled
+        case id, name, displayName, size, downloadURL, expectedByteCount, sha256
+        case isMultilingual, description, isBundled
     }
 }
 
 /// Represents a downloaded model on disk.
-struct DownloadedModel: Identifiable, Equatable {
+struct DownloadedModel: Identifiable, Equatable, Sendable {
     let id = UUID()
     let name: String
     let url: URL

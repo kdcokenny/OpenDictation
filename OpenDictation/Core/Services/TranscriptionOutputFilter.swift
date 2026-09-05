@@ -1,88 +1,84 @@
 import Foundation
-import os.log
 
-/// Filters transcription output to remove hallucinations and filler words.
-/// Applied automatically after every local transcription.
-/// Adapted from VoiceInk/Services/TranscriptionOutputFilter.swift
+/// Removes known speech-to-text control markers from transcription output.
 struct TranscriptionOutputFilter {
-    
-    private static let logger = Logger.app(category: "TranscriptionOutputFilter")
-    
-    // MARK: - Patterns
-    
-    /// Patterns that indicate hallucinations (whisper artifacts)
-    private static let hallucinationPatterns = [
-        #"\[.*?\]"#,     // [BLANK_AUDIO], [MUSIC], etc.
-        #"\(.*?\)"#,     // (music), (laughs), etc.
-        #"\{.*?\}"#      // {inaudible}, etc.
-    ]
-    
-    /// Common filler words to remove
+    static let removeFillerWordsKey = "removeFillerWords"
+
+    private static let artifactNamePattern = #"(?:blank[_ ]audio|music(?: playing)?|applause|laughter|laughs|inaudible|silence|background noise|noise)"#
+    private static let whisperControlNamePattern = #"(?:startoftranscript|endoftext|nospeech|notimestamps|translate|transcribe|[0-9]+(?:\.[0-9]+)?)"#
     private static let fillerWords = [
         "uh", "um", "uhm", "umm", "uhh", "uhhh",
-        "ah", "eh", "hmm", "hm", "mmm", "mm", "mh", "ha", "ehh"
+        "ah", "eh", "hmm", "hm", "mmm", "mm", "mh", "ehh"
     ]
-    
-    // MARK: - Public API
-    
-    /// Filters the transcription text to remove artifacts and filler words.
-    /// - Parameter text: Raw transcription text from whisper
-    /// - Returns: Cleaned text with hallucinations and fillers removed
+
+    /// Applies the user's saved cleanup preference.
     static func filter(_ text: String) -> String {
-        var filteredText = text
-        
-        // Remove <TAG>...</TAG> blocks (XML-like artifacts)
-        let tagBlockPattern = #"<([A-Za-z][A-Za-z0-9:_-]*)[^>]*>[\s\S]*?</\1>"#
-        if let regex = try? NSRegularExpression(pattern: tagBlockPattern) {
-            let range = NSRange(filteredText.startIndex..., in: filteredText)
-            filteredText = regex.stringByReplacingMatches(
-                in: filteredText,
-                options: [],
-                range: range,
-                withTemplate: ""
-            )
-        }
-        
-        // Remove bracketed hallucinations
-        for pattern in hallucinationPatterns {
-            if let regex = try? NSRegularExpression(pattern: pattern) {
-                let range = NSRange(filteredText.startIndex..., in: filteredText)
-                filteredText = regex.stringByReplacingMatches(
-                    in: filteredText,
-                    options: [],
-                    range: range,
-                    withTemplate: ""
-                )
-            }
-        }
-        
-        // Remove filler words (with optional trailing punctuation)
-        for fillerWord in fillerWords {
-            let pattern = "\\b\(NSRegularExpression.escapedPattern(for: fillerWord))\\b[,.]?"
-            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-                let range = NSRange(filteredText.startIndex..., in: filteredText)
-                filteredText = regex.stringByReplacingMatches(
-                    in: filteredText,
-                    options: [],
-                    range: range,
-                    withTemplate: ""
-                )
-            }
-        }
-        
-        // Clean up excessive whitespace
-        filteredText = filteredText.replacingOccurrences(
-            of: #"\s{2,}"#,
-            with: " ",
-            options: .regularExpression
+        filter(
+            text,
+            removeFillerWords: UserDefaults.standard.bool(forKey: removeFillerWordsKey)
         )
-        filteredText = filteredText.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        // Log if text was modified
-        if filteredText != text {
-            logger.debug("Filtered transcription: \"\(filteredText)\"")
+    }
+
+    /// Applies deterministic cleanup without reading storage.
+    static func filter(_ text: String, removeFillerWords: Bool) -> String {
+        let annotationPattern = #"(?i)(?:\[\s*"# + artifactNamePattern
+            + #"\s*\]|\(\s*"# + artifactNamePattern
+            + #"\s*\)|\{\s*"# + artifactNamePattern + #"\s*\})"#
+        let controlTokenPattern = #"(?i)<\|"# + whisperControlNamePattern + #"\|>"#
+        var result = replacingMatches(in: text, pattern: annotationPattern)
+        result = replacingMatches(in: result, pattern: controlTokenPattern)
+
+        if removeFillerWords {
+            result = removeFillers(from: result)
         }
-        
-        return filteredText
+
+        guard result != text else {
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return normalizeWhitespace(in: result)
+    }
+
+    private static func removeFillers(from text: String) -> String {
+        let alternatives = fillerWords
+            .map(NSRegularExpression.escapedPattern(for:))
+            .joined(separator: "|")
+        let pattern = #"(?i)(?<![\p{L}\p{M}\p{N}_])(?:"#
+            + alternatives
+            + #")(?![\p{L}\p{M}\p{N}_])[,\.]?"#
+        return replacingMatches(in: text, pattern: pattern)
+    }
+
+    private static func replacingMatches(in text: String, pattern: String) -> String {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else {
+            assertionFailure("Invalid transcription cleanup pattern")
+            return text
+        }
+
+        let range = NSRange(text.startIndex..., in: text)
+        return expression.stringByReplacingMatches(
+            in: text,
+            range: range,
+            withTemplate: ""
+        )
+    }
+
+    private static func normalizeWhitespace(in text: String) -> String {
+        let lines = text.components(separatedBy: .newlines).map { line in
+            line.replacingOccurrences(
+                of: #"[\t ]{2,}"#,
+                with: " ",
+                options: .regularExpression
+            )
+            .trimmingCharacters(in: .whitespaces)
+        }
+
+        return lines
+            .joined(separator: "\n")
+            .replacingOccurrences(
+                of: #"\n{3,}"#,
+                with: "\n\n",
+                options: .regularExpression
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

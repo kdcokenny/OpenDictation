@@ -27,12 +27,11 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
     
     /// Transcribes the audio file at the given URL using the local Whisper model.
     func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
-        // Get selected model from ModelManager, with fallback to any available model
+        // Use the model the user selected. A missing selection is an actionable error.
         let modelManager = await ModelManager.shared
         
-        let selectedModel = await resolveAvailableModel(modelManager: modelManager)
-        guard let selectedModel else {
-            logger.error("No speech models available")
+        guard let selectedModel = await modelManager.selectedModel else {
+            logger.error("Selected speech model is not available")
             throw WhisperError.modelNotFound
         }
         
@@ -48,7 +47,8 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
         
         // Configure transcription parameters from UserDefaults
         // Use shared "language" key (same as cloud mode) for consistency
-        let language = UserDefaults.standard.string(forKey: "language") ?? "auto"
+        let storedLanguage = UserDefaults.standard.string(forKey: "language") ?? "auto"
+        let language = storedLanguage.isEmpty ? "auto" : storedLanguage
         // Local mode uses deterministic transcription (temperature = 0)
         let temperature: Float = 0.0
         // Use pre-captured context (passed from boundary)
@@ -81,7 +81,7 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
         logger.info("Loaded \(samples.count) audio samples, starting transcription")
         
         // Run transcription
-        let success = await modelContext.fullTranscribe(samples: samples)
+        let success = try await modelContext.fullTranscribe(samples: samples)
         
         guard success else {
             logger.error("Whisper transcription failed")
@@ -91,12 +91,8 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
         // Get result
         let rawText = await modelContext.getTranscription()
         
-        logger.info("Transcription complete: \(rawText.prefix(50))...")
-        
-        // Apply output filter to remove hallucinations and filler words
-        let filteredText = TranscriptionOutputFilter.filter(rawText)
-        
-        return filteredText
+        logger.info("Whisper transcription completed")
+        return rawText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     // MARK: - Model Management
@@ -130,46 +126,18 @@ actor LocalTranscriptionProvider: TranscriptionProvider {
         loadedModelName = nil
         logger.debug("Whisper context released")
     }
-    
-    // MARK: - Model Resolution
-    
-    /// Resolves the model to use for transcription, with graceful fallback.
-    /// Apple philosophy: always try to find a working model rather than failing.
-    ///
-    /// Priority:
-    /// 1. Selected model (if downloaded)
-    /// 2. Bundled model (ggml-tiny)
-    /// 3. Any downloaded model
-    /// 4. nil (no models available)
-    private func resolveAvailableModel(modelManager: ModelManager) async -> DownloadedModel? {
-        // First try: selected model
-        if let selected = await modelManager.selectedModel {
-            return selected
+
+    /// Loads the selected installed model without changing the selection or downloading.
+    func prewarmIfInstalled() async throws {
+        let modelManager = await ModelManager.shared
+        guard let selectedModel = await modelManager.selectedModel else {
+            throw WhisperError.modelNotFound
         }
-        
-        let downloadedModels = await modelManager.downloadedModels
-        
-        // Second try: bundled model
-        let bundledName = PredefinedModels.bundled.name
-        if let bundled = downloadedModels.first(where: { $0.name == bundledName }) {
-            logger.info("Selected model not available, falling back to bundled: \(bundledName)")
-            await MainActor.run {
-                modelManager.selectedModelName = bundledName
-            }
-            return bundled
+
+        guard loadedModelName != selectedModel.name || whisperContext == nil else {
+            return
         }
-        
-        // Third try: any available model
-        if let anyModel = downloadedModels.first {
-            logger.info("Bundled model not available, falling back to: \(anyModel.name)")
-            await MainActor.run {
-                modelManager.selectedModelName = anyModel.name
-            }
-            return anyModel
-        }
-        
-        // No models available
-        logger.warning("No speech models available for transcription")
-        return nil
+
+        try await loadModel(selectedModel)
     }
 }

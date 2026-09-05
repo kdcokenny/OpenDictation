@@ -1,74 +1,74 @@
-name: Tests
+name: CI
 
 on:
   push:
     branches: [main]
     paths:
+      - '.github/workflows/**'
+      - '.swiftlint.yml'
+      - 'Config/**'
+      - 'Config.xcconfig'
+      - 'Frameworks/**'
+      - 'Makefile'
       - 'OpenDictation/**'
       - 'OpenDictationTests/**'
-      - 'Makefile'
-      - '.github/workflows/test.yml'
       - 'project.yml'
+      - 'scripts/**'
   pull_request:
     paths:
+      - '.github/workflows/**'
+      - '.swiftlint.yml'
+      - 'Config/**'
+      - 'Config.xcconfig'
+      - 'Frameworks/**'
+      - 'Makefile'
       - 'OpenDictation/**'
       - 'OpenDictationTests/**'
-      - 'Makefile'
-      - '.github/workflows/test.yml'
       - 'project.yml'
+      - 'scripts/**'
 
-env:
-  WHISPER_VERSION: "1.8.2"
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    name: Unit Tests
+  build-and-test:
+    name: Lint, test, and release build
     runs-on: macos-26
     permissions:
       contents: read
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Setup Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
-          xcode-version: latest-stable
+          xcode-version: '26.6'
 
-      - name: Install Tools
-        run: brew install xcodegen xcbeautify
+      - name: Install build tools
+        run: brew install xcodegen swiftlint
 
-      - name: Generate Xcode Project
-        run: xcodegen generate
+      - name: Run CI checks
+        run: make ci 'XCODEBUILD_FLAGS=CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='
 
-      - name: Download whisper.cpp XCFramework
-        run: |
-          mkdir -p deps/whisper.cpp
-          curl -L -o whisper-xcframework.zip \
-            "https://github.com/ggml-org/whisper.cpp/releases/download/v$WHISPER_VERSION/whisper-v$WHISPER_VERSION-xcframework.zip"
-          unzip -q whisper-xcframework.zip -d deps/whisper.cpp
-          rm whisper-xcframework.zip
-          echo "Downloaded whisper.cpp v$WHISPER_VERSION xcframework"
+      - name: Package unsigned build artifact
+        run: ditto -c -k --sequesterRsrc --keepParent build/Build/Products/Release/OpenDictation.app OpenDictation-unsigned.zip
 
-      - name: Run Tests
-        run: |
-          set -o pipefail
-          xcodebuild test \
-            -project OpenDictation.xcodeproj \
-            -scheme OpenDictationTests \
-            -destination 'platform=macOS' \
-            -resultBundlePath TestResults.xcresult \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            | xcbeautify --renderer github-actions
+      - name: Upload release build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: OpenDictation-unsigned-${{ github.sha }}
+          path: OpenDictation-unsigned.zip
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Upload Test Results
+      - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: test-results
-          path: TestResults.xcresult
+          name: test-results-${{ github.sha }}
+          path: build/TestResults.xcresult
           if-no-files-found: warn
           retention-days: 7

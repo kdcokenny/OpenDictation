@@ -6,6 +6,24 @@ final class ModelManagerTests: XCTestCase {
     
     var tempDirectory: URL!
     var sut: ModelManager!
+    private var previousSelectedModel: String?
+
+    private let validModelContents = Data("valid model".utf8)
+
+    private var bundledModel: WhisperModel {
+        WhisperModel(
+            id: UUID(),
+            name: "test-whisper",
+            displayName: "Test Whisper",
+            size: "11 bytes",
+            downloadURL: "https://example.com/test-whisper.bin",
+            expectedByteCount: 11,
+            sha256: "fe8d07f0cc8f22537e1bad3404430bec54ad778abbe9a7f15eec0e2b932e5a58",
+            isMultilingual: true,
+            description: "Test model",
+            isBundled: true
+        )
+    }
     
     override func setUp() async throws {
         try await super.setUp()
@@ -15,11 +33,18 @@ final class ModelManagerTests: XCTestCase {
             .appendingPathComponent("ModelManagerTests_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         
-        sut = ModelManager(modelsDirectory: tempDirectory)
+        previousSelectedModel = UserDefaults.standard.string(forKey: "selectedLocalModel")
+        UserDefaults.standard.set(bundledModel.name, forKey: "selectedLocalModel")
+        sut = ModelManager(modelsDirectory: tempDirectory, models: [bundledModel])
     }
     
     override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempDirectory)
+        if let previousSelectedModel {
+            UserDefaults.standard.set(previousSelectedModel, forKey: "selectedLocalModel")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "selectedLocalModel")
+        }
         try await super.tearDown()
     }
     
@@ -29,23 +54,23 @@ final class ModelManagerTests: XCTestCase {
     
     func testLoadDownloadedModels() throws {
         // Given: Create a dummy model file
-        let modelFile = tempDirectory.appendingPathComponent("ggml-tiny.bin")
-        try "dummy content".write(to: modelFile, atomically: true, encoding: .utf8)
+        let modelFile = tempDirectory.appendingPathComponent(bundledModel.filename)
+        try validModelContents.write(to: modelFile)
         
         // When
         sut.loadDownloadedModels()
         
         // Then
         XCTAssertEqual(sut.downloadedModels.count, 1)
-        XCTAssertEqual(sut.downloadedModels.first?.name, "ggml-tiny")
+        XCTAssertEqual(sut.downloadedModels.first?.name, bundledModel.name)
     }
     
     func testIsDownloaded() throws {
-        let model = PredefinedModels.bundled
+        let model = bundledModel
         XCTAssertFalse(sut.isDownloaded(model))
         
         let path = tempDirectory.appendingPathComponent(model.filename)
-        try "dummy".write(to: path, atomically: true, encoding: .utf8)
+        try validModelContents.write(to: path)
         
         sut.loadDownloadedModels()
         XCTAssertTrue(sut.isDownloaded(model))
@@ -53,9 +78,9 @@ final class ModelManagerTests: XCTestCase {
     
     func testValidateSelectedModelFallsBackToBundled() throws {
         // Given: We have a bundled model file on disk
-        let bundled = PredefinedModels.bundled
+        let bundled = bundledModel
         let bundledPath = tempDirectory.appendingPathComponent(bundled.filename)
-        try "bundled content".write(to: bundledPath, atomically: true, encoding: .utf8)
+        try validModelContents.write(to: bundledPath)
         sut.loadDownloadedModels()
         
         // Set selected model to something non-existent
@@ -75,5 +100,85 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertFalse(name.isEmpty)
         // By default on most Macs it should be ggml-base or ggml-tiny
         XCTAssertTrue(name.contains("ggml-"))
+    }
+
+    func testLegacyEmptyLanguageUsesAutoDetection() {
+        XCTAssertTrue(bundledModel.supportsLanguage(""))
+    }
+
+    func testUnknownSelectedModelFailsLanguageValidation() {
+        sut.selectedModelName = "unknown-model"
+
+        XCTAssertFalse(sut.currentModelSupportsLanguage("en"))
+    }
+
+    func testLoadDownloadedModelsRejectsWrongSize() throws {
+        let path = tempDirectory.appendingPathComponent(bundledModel.filename)
+        try Data("short".utf8).write(to: path)
+
+        sut.loadDownloadedModels()
+
+        XCTAssertTrue(sut.downloadedModels.isEmpty)
+        XCTAssertNotNil(sut.downloadErrors[bundledModel.name])
+    }
+
+    func testValidatorRejectsWrongChecksum() throws {
+        let path = tempDirectory.appendingPathComponent(bundledModel.filename)
+        try Data("bad content".utf8).write(to: path)
+        let sameSizeWrongHash = WhisperModel(
+            id: UUID(),
+            name: "wrong-hash",
+            displayName: "Wrong hash",
+            size: "11 bytes",
+            downloadURL: "https://example.com/wrong-hash.bin",
+            expectedByteCount: 11,
+            sha256: String(repeating: "0", count: 64),
+            isMultilingual: true,
+            description: "Test model"
+        )
+
+        XCTAssertThrowsError(try ModelFileValidator.validate(fileAt: path, for: sameSizeWrongHash)) { error in
+            guard case ModelValidationError.checksumMismatch = error else {
+                return XCTFail("Expected checksumMismatch, got \(error)")
+            }
+        }
+    }
+
+    func testResponseValidatorRejectsHTTPError() throws {
+        let path = tempDirectory.appendingPathComponent("response-error.bin")
+        try validModelContents.write(to: path)
+        let response = HTTPURLResponse(
+            url: URL(string: "https://example.com/model.bin")!,
+            statusCode: 404,
+            httpVersion: nil,
+            headerFields: ["Content-Length": "11"]
+        )!
+
+        XCTAssertThrowsError(
+            try ModelDownloadResponseValidator.validate(response, fileAt: path)
+        ) { error in
+            guard case ModelDownloadError.invalidHTTPStatus(404) = error else {
+                return XCTFail("Expected invalidHTTPStatus, got \(error)")
+            }
+        }
+    }
+
+    func testResponseValidatorRejectsIncompleteBody() throws {
+        let path = tempDirectory.appendingPathComponent("response-size.bin")
+        try validModelContents.write(to: path)
+        let response = HTTPURLResponse(
+            url: URL(string: "https://example.com/model.bin")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["Content-Length": "12"]
+        )!
+
+        XCTAssertThrowsError(
+            try ModelDownloadResponseValidator.validate(response, fileAt: path)
+        ) { error in
+            guard case ModelDownloadError.responseSizeMismatch(expected: 12, actual: 11) = error else {
+                return XCTFail("Expected responseSizeMismatch, got \(error)")
+            }
+        }
     }
 }

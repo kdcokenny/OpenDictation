@@ -3,7 +3,7 @@ options:
   bundleIdPrefix: com.opendictation
   deploymentTarget:
     macOS: "14.0"
-  xcodeVersion: "16.0"
+  xcodeVersion: "16.3"
   generateEmptyDirectories: true
   groupSortPosition: top
 
@@ -31,16 +31,19 @@ settings:
 packages:
   KeyboardShortcuts:
     url: https://github.com/sindresorhus/KeyboardShortcuts
-    from: "2.4.0"
+    exactVersion: "2.4.0"
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
-    from: "2.8.1"
+    exactVersion: "2.8.1"
   Defaults:
     url: https://github.com/sindresorhus/Defaults
-    from: "9.0.0"
+    exactVersion: "9.0.0"
   LaunchAtLogin:
     url: https://github.com/sindresorhus/LaunchAtLogin-Modern
-    from: "1.1.0"
+    exactVersion: "1.1.0"
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio.git
+    exactVersion: "0.15.6"
 
 targets:
   OpenDictation:
@@ -93,6 +96,7 @@ targets:
         product: Sparkle
       - package: Defaults
       - package: LaunchAtLogin
+      - package: FluidAudio
       - framework: Frameworks/whisper.xcframework
         embed: true
     preBuildScripts:
@@ -124,3 +128,22 @@ targets:
       PRODUCT_MODULE_NAME: OpenDictationTests
       PRODUCT_BUNDLE_IDENTIFIER: com.opendictation.OpenDictationTests
 
+schemes:
+  OpenDictation:
+    build:
+      targets:
+        OpenDictation: all
+        OpenDictationTests:
+          - test
+    run:
+      config: "Debug (Dev)"
+    test:
+      config: Debug
+      targets:
+        - OpenDictationTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

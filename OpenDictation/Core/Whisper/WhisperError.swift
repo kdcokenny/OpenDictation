@@ -1,7 +1,7 @@
 import Foundation
 
 /// Errors that can occur during local Whisper transcription.
-enum WhisperError: Error, Identifiable, LocalizedError {
+enum WhisperError: Error, Equatable, Identifiable, LocalizedError {
     case modelNotFound
     case modelLoadFailed
     case transcriptionFailed

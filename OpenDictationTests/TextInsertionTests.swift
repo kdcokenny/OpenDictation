@@ -70,6 +70,23 @@ final class TextInsertionTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), originalText)
         XCTAssertEqual(pasteboard.data(forType: .rtf), rtfData)
     }
+
+    func testAutomaticallyRestoresClipboardWithoutUIDismissal() async throws {
+        pasteboard.declareTypes([.string], owner: nil)
+        pasteboard.setString("Original Content", forType: .string)
+        let automaticRestoreSut = TextInsertionService(
+            accessibilityChecker: MockAccessibilityChecker(isGranted: true),
+            pasteSimulator: { true },
+            clipboardRestoreDelay: .milliseconds(10)
+        )
+
+        XCTAssertEqual(automaticRestoreSut.insertText("Dictated Text"), .inserted)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Dictated Text")
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original Content")
+    }
     
     // MARK: - Fallback Logic
     

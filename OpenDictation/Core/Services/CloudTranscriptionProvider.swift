@@ -5,6 +5,7 @@ import os.log
 enum TranscriptionError: Error, LocalizedError {
     case apiKeyMissing
     case invalidURL
+    case invalidConfiguration(String)
     case audioFileNotFound
     case audioFileEmpty
     case networkError(Error)
@@ -17,6 +18,8 @@ enum TranscriptionError: Error, LocalizedError {
         switch self {
         case .apiKeyMissing:
             return "No API key. Add one in Settings."
+        case .invalidConfiguration(let message):
+            return message
         case .invalidURL:
             return "The server address isn't valid."
         case .audioFileNotFound:
@@ -62,6 +65,7 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
     private let session: URLSession
     private let apiKeyProvider: APIKeyProvider
     private let uploadHandler: UploadHandler?
+    private let configurationProvider: @Sendable () -> CloudTranscriptionConfiguration
 
     private enum NetworkPolicy {
         static let maxUploadAttempts = 2
@@ -77,15 +81,18 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
         self.session = session
         self.apiKeyProvider = apiKeyProvider
         self.uploadHandler = nil
+        self.configurationProvider = { .load() }
     }
 
     init(
         apiKeyProvider: @escaping APIKeyProvider,
+        configurationProvider: @escaping @Sendable () -> CloudTranscriptionConfiguration = { .load() },
         uploadHandler: @escaping UploadHandler
     ) {
         self.session = CloudTranscriptionProvider.makeSession()
         self.apiKeyProvider = apiKeyProvider
         self.uploadHandler = uploadHandler
+        self.configurationProvider = configurationProvider
     }
 
     private static func makeSession() -> URLSession {
@@ -98,56 +105,6 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
         return URLSession(configuration: config)
     }
     
-    // MARK: - Settings Access
-    
-    /// Returns the full transcription endpoint URL.
-    /// If the custom URL contains "audio/transcriptions", it's treated as a full endpoint.
-    /// Otherwise, "/audio/transcriptions" is appended to the base URL.
-    private var transcriptionEndpoint: String {
-        let custom = UserDefaults.standard.string(forKey: "baseURL") ?? ""
-        
-        if custom.isEmpty {
-            return "https://api.openai.com/v1/audio/transcriptions"
-        }
-        
-        // If URL already contains the transcriptions path, use it directly
-        // This supports Azure: https://foo.openai.azure.com/openai/deployments/whisper/audio/transcriptions?api-version=2024-02-01
-        if custom.contains("audio/transcriptions") {
-            return custom
-        }
-        
-        // Otherwise treat as base URL and append the path
-        let base = custom.hasSuffix("/") ? String(custom.dropLast()) : custom
-        return "\(base)/audio/transcriptions"
-    }
-    
-    /// Detects if the endpoint is Azure OpenAI based on the URL pattern.
-    private var isAzureOpenAI: Bool {
-        let custom = UserDefaults.standard.string(forKey: "baseURL") ?? ""
-        return custom.contains(".openai.azure.com")
-    }
-    
-    /// Returns the model name for transcription.
-    /// Defaults to "whisper-1" if not customized.
-    private var modelName: String {
-        let custom = (UserDefaults.standard.string(forKey: "model") ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return custom.isEmpty ? "whisper-1" : custom
-    }
-    
-    /// Returns the temperature for transcription.
-    /// Defaults to 0 (deterministic). Range: 0-1.
-    private var temperature: Double {
-        UserDefaults.standard.double(forKey: "temperature")
-    }
-    
-    /// Returns the language code for transcription.
-    /// Empty string means auto-detect. Use ISO-639-1 codes (e.g. "en", "es").
-    private var languageCode: String {
-        (UserDefaults.standard.string(forKey: "language") ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    
     // MARK: - Public API
     
     /// Transcribes the audio file at the given URL.
@@ -158,6 +115,13 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
     /// - Returns: The transcribed text.
     /// - Throws: `TranscriptionError` if transcription fails.
     func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
+        try Task.checkCancellation()
+        let configuration = configurationProvider()
+        let url = try configuration.endpoint()
+        guard configuration.temperature.isFinite, (0...1).contains(configuration.temperature) else {
+            throw TranscriptionError.invalidConfiguration("Temperature must be between 0 and 1.")
+        }
+
         // Get API key from the configured credential source.
         let apiKey = apiKeyProvider()?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -183,12 +147,6 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
         
         logger.info("Starting transcription for file: \(audioURL.lastPathComponent) (\(fileSize) bytes)")
         
-        // Build the request
-        guard let url = URL(string: transcriptionEndpoint) else {
-            logger.error("Invalid transcription endpoint URL: \(self.transcriptionEndpoint)")
-            throw TranscriptionError.invalidURL
-        }
-        
         // Create multipart form data
         let boundary = "Boundary-\(UUID().uuidString)"
         var request = URLRequest(url: url)
@@ -196,7 +154,7 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         
         // Azure uses "api-key" header, OpenAI uses "Authorization: Bearer"
-        if isAzureOpenAI {
+        if let host = url.host, host.hasSuffix(".openai.azure.com") {
             request.setValue(apiKey, forHTTPHeaderField: "api-key")
         } else {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -215,7 +173,8 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
             boundary: boundary,
             audioData: audioData,
             audioFileName: audioURL.lastPathComponent,
-            context: context
+            context: context,
+            configuration: configuration
         )
         
         // Make the request using upload API (better for large files)
@@ -250,10 +209,6 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
             whisperResponse = try JSONDecoder().decode(WhisperResponse.self, from: data)
         } catch {
             logger.error("Failed to decode response: \(error.localizedDescription)")
-            // Log raw response for debugging
-            if let rawResponse = String(data: data, encoding: .utf8) {
-                logger.debug("Raw response: \(rawResponse)")
-            }
             throw TranscriptionError.invalidResponse
         }
         
@@ -263,10 +218,11 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
             throw TranscriptionError.noTranscriptionReturned
         }
         
-        logger.info("Transcription successful: \(whisperResponse.text.prefix(50))...")
+        try Task.checkCancellation()
+        logger.info("Cloud transcription completed")
         
         // Clean and return text
-        return Self.cleanTranscriptionText(whisperResponse.text)
+        return whisperResponse.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Upload Retry
@@ -371,7 +327,7 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
     
     // MARK: - Multipart Form Data
     
-    private func buildMultipartBody(boundary: String, audioData: Data, audioFileName: String, context: ContextProfile) -> Data {
+    private func buildMultipartBody(boundary: String, audioData: Data, audioFileName: String, context: ContextProfile, configuration: CloudTranscriptionConfiguration) -> Data {
         var body = Data()
         let crlf = "\r\n"
         
@@ -395,23 +351,25 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
         // Model field
         appendString("--\(boundary)\(crlf)")
         appendString("Content-Disposition: form-data; name=\"model\"\(crlf)\(crlf)")
-        appendString("\(modelName)\(crlf)")
+        appendString("\(configuration.modelName)\(crlf)")
         
         // Response format field (ensures JSON response)
         appendString("--\(boundary)\(crlf)")
         appendString("Content-Disposition: form-data; name=\"response_format\"\(crlf)\(crlf)")
         appendString("json\(crlf)")
         
-        // Temperature field
-        appendString("--\(boundary)\(crlf)")
-        appendString("Content-Disposition: form-data; name=\"temperature\"\(crlf)\(crlf)")
-        appendString("\(temperature)\(crlf)")
-        
-        // Language field (only if specified)
-        if !languageCode.isEmpty {
+        // GPT-Transcribe uses language arrays and does not accept the legacy temperature field.
+        if !configuration.usesLanguageArray {
             appendString("--\(boundary)\(crlf)")
-            appendString("Content-Disposition: form-data; name=\"language\"\(crlf)\(crlf)")
-            appendString("\(languageCode)\(crlf)")
+            appendString("Content-Disposition: form-data; name=\"temperature\"\(crlf)\(crlf)")
+            appendString("\(configuration.temperature)\(crlf)")
+        }
+
+        if let language = configuration.languageHint {
+            let field = configuration.usesLanguageArray ? "languages[]" : "language"
+            appendString("--\(boundary)\(crlf)")
+            appendString("Content-Disposition: form-data; name=\"\(field)\"\(crlf)\(crlf)")
+            appendString("\(language)\(crlf)")
         }
 
         // Prompt field (only if context provides one)
@@ -450,40 +408,10 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
     
     // MARK: - Text Cleaning
     
-    /// Cleans transcription text by removing common markers and artifacts.
-    /// Follows AudioWhisper's production-tested cleaning logic.
     static func cleanTranscriptionText(_ text: String) -> String {
-        var cleanedText = text
-        
-        // Remove bracketed markers iteratively to handle nested cases
-        // e.g., [Music], [Laughter], [BLANK_AUDIO]
-        var previousLength = 0
-        while cleanedText.count != previousLength {
-            previousLength = cleanedText.count
-            cleanedText = cleanedText.replacingOccurrences(
-                of: "\\[[^\\[\\]]*\\]",
-                with: "",
-                options: .regularExpression
-            )
-        }
-        
-        // Remove parenthetical markers iteratively to handle nested cases
-        // e.g., (music), (laughs)
-        previousLength = 0
-        while cleanedText.count != previousLength {
-            previousLength = cleanedText.count
-            cleanedText = cleanedText.replacingOccurrences(
-                of: "\\([^\\(\\)]*\\)",
-                with: "",
-                options: .regularExpression
-            )
-        }
-        
-        // Clean up whitespace and return
-        return cleanedText
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        TranscriptionOutputFilter.filter(text)
     }
+
 }
 
 // MARK: - Response Models

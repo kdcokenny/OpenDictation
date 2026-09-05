@@ -17,10 +17,10 @@ enum DictationState: Equatable {
 /// Events that trigger state transitions.
 enum DictationEvent {
     case hotkeyPressed(context: ContextProfile)
-    case stopRecording
-    case transcriptionStarted
-    case transcriptionCompleted(text: String)
-    case transcriptionFailed(error: String)
+    case stopRecording(context: ContextProfile)
+    case transcriptionStarted(sessionID: UUID)
+    case transcriptionCompleted(sessionID: UUID, text: String)
+    case transcriptionFailed(sessionID: UUID, error: String)
     case escapePressed
     case dismissCompleted
     case forceReset  // System-level interruption (display changes, sleep, etc.) - bypasses normal flow
@@ -46,6 +46,12 @@ final class DictationStateMachine: ObservableObject {
     // MARK: - Published State
     
     @Published private(set) var state: DictationState = .idle
+
+    /// Identifies the current dictation so delayed work cannot affect a newer session.
+    private(set) var activeSessionID: UUID?
+
+    /// Prevents repeated key events from stopping the same recording more than once.
+    private(set) var isStopRequested = false
     
     /// The context profile captured at hotkey press (persists across states)
     var currentContext: ContextProfile = .prose
@@ -60,16 +66,16 @@ final class DictationStateMachine: ObservableObject {
     // MARK: - Callbacks
     
     /// Called when recording should start
-    var onStartRecording: (() -> Void)?
+    var onStartRecording: ((UUID) -> Void)?
     
     /// Called when recording should stop and transcription begin
-    var onStopRecording: (() -> Void)?
+    var onStopRecording: ((UUID) -> Void)?
     
     /// Called when the operation should be cancelled
-    var onCancel: (() -> Void)?
+    var onCancel: ((UUID) -> Void)?
     
     /// Called when the panel should be shown
-    var onShowPanel: (() -> Void)?
+    var onShowPanel: ((UUID) -> Void)?
     
     /// Called when the panel should be hidden
     var onHidePanel: (() -> Void)?
@@ -87,61 +93,60 @@ final class DictationStateMachine: ObservableObject {
             
         // MARK: From Idle
         case (.idle, .hotkeyPressed(let context)):
+            let sessionID = UUID()
+            activeSessionID = sessionID
+            isStopRequested = false
             currentContext = context
             state = .recording
-            onShowPanel?()
+            onShowPanel?(sessionID)
             if !isMockMode {
-                onStartRecording?()
+                onStartRecording?(sessionID)
             }
             
         // MARK: From Recording
         case (.recording, .hotkeyPressed(let context)):
-            // Update context to match where user ENDS (not starts) dictation
-            // This ensures the icon and transcription are in sync
-            currentContext = context
-            if !isMockMode {
-                onStopRecording?()
-            }
-            // Don't transition yet - wait for transcription result or timeout
-            // The transition to .processing happens via transcriptionStarted event
+            requestStop(context: context)
             
-        case (.recording, .stopRecording):
-            // stopRecording doesn't carry context, keep existing
-            if !isMockMode {
-                onStopRecording?()
-            }
-            // Don't transition yet - wait for transcription result or timeout
+        case (.recording, .stopRecording(let context)):
+            requestStop(context: context)
             
-        case (.recording, .transcriptionStarted):
+        case (.recording, .transcriptionStarted(let sessionID))
+            where sessionID == activeSessionID:
             // Transcription has started, show processing state
             state = .processing
             
-        case (.recording, .transcriptionCompleted(let text)):
+        case (.recording, .transcriptionCompleted(let sessionID, let text))
+            where sessionID == activeSessionID:
             handleTranscriptionResult(.success(text))
             
-        case (.recording, .transcriptionFailed(let error)):
+        case (.recording, .transcriptionFailed(let sessionID, let error))
+            where sessionID == activeSessionID:
             handleTranscriptionResult(.failure(error))
             
         case (.recording, .escapePressed):
+            let sessionID = activeSessionID
             state = .cancelled
-            if !isMockMode {
-                onCancel?()
+            if !isMockMode, let sessionID {
+                onCancel?(sessionID)
             }
-            // Panel will dismiss via dismissCompleted event
+            onHidePanel?()
             
         // MARK: From Processing
-        case (.processing, .transcriptionCompleted(let text)):
+        case (.processing, .transcriptionCompleted(let sessionID, let text))
+            where sessionID == activeSessionID:
             handleTranscriptionResult(.success(text))
             
-        case (.processing, .transcriptionFailed(let error)):
+        case (.processing, .transcriptionFailed(let sessionID, let error))
+            where sessionID == activeSessionID:
             handleTranscriptionResult(.failure(error))
             
         case (.processing, .escapePressed):
+            let sessionID = activeSessionID
             state = .cancelled
-            if !isMockMode {
-                onCancel?()
+            if !isMockMode, let sessionID {
+                onCancel?(sessionID)
             }
-            // Panel will dismiss via dismissCompleted event
+            onHidePanel?()
             
         // MARK: From Terminal States
         case (.success, .dismissCompleted),
@@ -150,6 +155,8 @@ final class DictationStateMachine: ObservableObject {
              (.empty, .dismissCompleted),
              (.cancelled, .dismissCompleted):
             state = .idle
+            activeSessionID = nil
+            isStopRequested = false
             // Auto-disable mock mode when returning to idle
             if isMockMode {
                 isMockMode = false
@@ -161,6 +168,8 @@ final class DictationStateMachine: ObservableObject {
             // Emergency reset from ANY state (display changes, system sleep, etc.)
             // Bypasses normal state flow and callbacks
             state = .idle
+            activeSessionID = nil
+            isStopRequested = false
             if isMockMode {
                 isMockMode = false
                 logger.debug("Mock mode auto-disabled via force reset")
@@ -183,6 +192,19 @@ final class DictationStateMachine: ObservableObject {
     private enum TranscriptionResult {
         case success(String)
         case failure(String)
+    }
+
+    private func requestStop(context: ContextProfile) {
+        guard !isStopRequested, let sessionID = activeSessionID else { return }
+
+        // Capture the context where dictation ended. App activation updates remain valid
+        // until this point, then the transcription uses this final value.
+        currentContext = context
+        isStopRequested = true
+
+        if !isMockMode {
+            onStopRecording?(sessionID)
+        }
     }
     
     private func handleTranscriptionResult(_ result: TranscriptionResult) {

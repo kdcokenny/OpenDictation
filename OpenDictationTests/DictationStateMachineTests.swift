@@ -33,8 +33,8 @@ final class DictationStateMachineTests: XCTestCase {
         let showPanelExpectation = expectation(description: "onShowPanel called")
         let startRecordingExpectation = expectation(description: "onStartRecording called")
         
-        sut.onShowPanel = { showPanelExpectation.fulfill() }
-        sut.onStartRecording = { startRecordingExpectation.fulfill() }
+        sut.onShowPanel = { _ in showPanelExpectation.fulfill() }
+        sut.onStartRecording = { _ in startRecordingExpectation.fulfill() }
         
         // When
         sut.send(.hotkeyPressed(context: .prose))
@@ -48,9 +48,10 @@ final class DictationStateMachineTests: XCTestCase {
     func testRecordingToProcessingFlow() {
         // Given
         sut.send(.hotkeyPressed(context: .prose))
+        let sessionID = requireActiveSessionID()
         
         // When
-        sut.send(.transcriptionStarted)
+        sut.send(.transcriptionStarted(sessionID: sessionID))
         
         // Then
         XCTAssertEqual(sut.state, .processing)
@@ -59,7 +60,8 @@ final class DictationStateMachineTests: XCTestCase {
     func testProcessingToSuccessFlow() {
         // Given
         sut.send(.hotkeyPressed(context: .prose))
-        sut.send(.transcriptionStarted)
+        let sessionID = requireActiveSessionID()
+        sut.send(.transcriptionStarted(sessionID: sessionID))
         
         let hidePanelExpectation = expectation(description: "onHidePanel called")
         sut.onHidePanel = { hidePanelExpectation.fulfill() }
@@ -68,7 +70,7 @@ final class DictationStateMachineTests: XCTestCase {
         sut.onInsertText = { _ in .inserted }
         
         // When
-        sut.send(.transcriptionCompleted(text: "Hello world"))
+        sut.send(.transcriptionCompleted(sessionID: sessionID, text: "Hello world"))
         
         // Then
         XCTAssertEqual(sut.state, .success)
@@ -78,10 +80,11 @@ final class DictationStateMachineTests: XCTestCase {
     func testFastTranscriptionFlow() {
         // Given
         sut.send(.hotkeyPressed(context: .prose))
+        let sessionID = requireActiveSessionID()
         sut.onInsertText = { _ in .inserted }
         
         // When - Transcription finishes BEFORE .transcriptionStarted is even sent
-        sut.send(.transcriptionCompleted(text: "Hello fast"))
+        sut.send(.transcriptionCompleted(sessionID: sessionID, text: "Hello fast"))
         
         // Then
         XCTAssertEqual(sut.state, .success)
@@ -93,7 +96,7 @@ final class DictationStateMachineTests: XCTestCase {
         // Given
         sut.send(.hotkeyPressed(context: .prose))
         let cancelExpectation = expectation(description: "onCancel called")
-        sut.onCancel = { cancelExpectation.fulfill() }
+        sut.onCancel = { _ in cancelExpectation.fulfill() }
         
         // When
         sut.send(.escapePressed)
@@ -106,9 +109,10 @@ final class DictationStateMachineTests: XCTestCase {
     func testCancelDuringProcessing() {
         // Given
         sut.send(.hotkeyPressed(context: .prose))
-        sut.send(.transcriptionStarted)
+        let sessionID = requireActiveSessionID()
+        sut.send(.transcriptionStarted(sessionID: sessionID))
         let cancelExpectation = expectation(description: "onCancel called")
-        sut.onCancel = { cancelExpectation.fulfill() }
+        sut.onCancel = { _ in cancelExpectation.fulfill() }
         
         // When
         sut.send(.escapePressed)
@@ -121,17 +125,20 @@ final class DictationStateMachineTests: XCTestCase {
     // MARK: - Terminal to Idle
     
     func testTerminalStatesReturnToIdleAfterDismiss() {
-        let terminalEvents: [DictationEvent] = [
-            .transcriptionCompleted(text: "test"),
-            .transcriptionFailed(error: "error"),
-            .escapePressed
-        ]
-        
-        for event in terminalEvents {
+        for terminalState in ["success", "error", "cancelled"] {
             sut = DictationStateMachine()
             sut.send(.hotkeyPressed(context: .prose))
+            let sessionID = requireActiveSessionID()
             sut.onInsertText = { _ in .inserted }
-            sut.send(event)
+
+            switch terminalState {
+            case "success":
+                sut.send(.transcriptionCompleted(sessionID: sessionID, text: "test"))
+            case "error":
+                sut.send(.transcriptionFailed(sessionID: sessionID, error: "error"))
+            default:
+                sut.send(.escapePressed)
+            }
             
             // Verify it's in a terminal state
             XCTAssertNotEqual(sut.state, .idle)
@@ -140,7 +147,8 @@ final class DictationStateMachineTests: XCTestCase {
             sut.send(.dismissCompleted)
             
             // Then
-            XCTAssertEqual(sut.state, .idle, "Failed to return to idle from terminal event: \(event)")
+            XCTAssertEqual(sut.state, .idle, "Failed to return to idle from \(terminalState)")
+            XCTAssertNil(sut.activeSessionID)
         }
     }
     
@@ -155,6 +163,7 @@ final class DictationStateMachineTests: XCTestCase {
         
         // Then
         XCTAssertEqual(sut.state, .idle)
+        XCTAssertNil(sut.activeSessionID)
     }
     
     // MARK: - Error Handling
@@ -162,9 +171,10 @@ final class DictationStateMachineTests: XCTestCase {
     func testTranscriptionFailure() {
         // Given
         sut.send(.hotkeyPressed(context: .prose))
+        let sessionID = requireActiveSessionID()
         
         // When
-        sut.send(.transcriptionFailed(error: "Network error"))
+        sut.send(.transcriptionFailed(sessionID: sessionID, error: "Network error"))
         
         // Then
         XCTAssertEqual(sut.state, .error(message: "Network error"))
@@ -173,9 +183,10 @@ final class DictationStateMachineTests: XCTestCase {
     func testEmptyTranscription() {
         // Given
         sut.send(.hotkeyPressed(context: .prose))
+        let sessionID = requireActiveSessionID()
         
         // When
-        sut.send(.transcriptionCompleted(text: "   "))
+        sut.send(.transcriptionCompleted(sessionID: sessionID, text: "   "))
         
         // Then
         XCTAssertEqual(sut.state, .empty)
@@ -184,10 +195,11 @@ final class DictationStateMachineTests: XCTestCase {
     func testInsertionFailure() {
         // Given
         sut.send(.hotkeyPressed(context: .prose))
+        let sessionID = requireActiveSessionID()
         
         // When
         sut.onInsertText = { _ in .failed("Failed to insert text. Please try again.") }
-        sut.send(.transcriptionCompleted(text: "Important text"))
+        sut.send(.transcriptionCompleted(sessionID: sessionID, text: "Important text"))
         
         // Then
         XCTAssertEqual(sut.state, .error(message: "Failed to insert text. Please try again."))
@@ -196,12 +208,68 @@ final class DictationStateMachineTests: XCTestCase {
     func testCopiedOnlyDelivery() {
         // Given
         sut.send(.hotkeyPressed(context: .prose))
+        let sessionID = requireActiveSessionID()
 
         // When
         sut.onInsertText = { _ in .copiedOnly }
-        sut.send(.transcriptionCompleted(text: "Important text"))
+        sut.send(.transcriptionCompleted(sessionID: sessionID, text: "Important text"))
 
         // Then
         XCTAssertEqual(sut.state, .copiedToClipboard)
+    }
+
+    func testStopCapturesFinalContextAndRunsOnlyOnce() {
+        sut.send(.hotkeyPressed(context: .prose))
+        let sessionID = requireActiveSessionID()
+        var stoppedSessionIDs: [UUID] = []
+        sut.onStopRecording = { stoppedSessionIDs.append($0) }
+
+        sut.send(.stopRecording(context: .code))
+        sut.send(.stopRecording(context: .prose))
+
+        XCTAssertEqual(stoppedSessionIDs, [sessionID])
+        XCTAssertEqual(sut.currentContext, .code)
+        XCTAssertTrue(sut.isStopRequested)
+    }
+
+    func testStaleTranscriptionEventsCannotAffectNewSession() {
+        sut.send(.hotkeyPressed(context: .prose))
+        let oldSessionID = requireActiveSessionID()
+        sut.send(.escapePressed)
+        sut.send(.dismissCompleted)
+
+        sut.send(.hotkeyPressed(context: .code))
+        let newSessionID = requireActiveSessionID()
+        var insertedText: String?
+        sut.onInsertText = {
+            insertedText = $0
+            return .inserted
+        }
+
+        sut.send(.transcriptionStarted(sessionID: oldSessionID))
+        sut.send(.transcriptionCompleted(sessionID: oldSessionID, text: "stale"))
+
+        XCTAssertEqual(sut.state, .recording)
+        XCTAssertEqual(sut.activeSessionID, newSessionID)
+        XCTAssertNil(insertedText)
+    }
+
+    func testCancellationRequestsPanelDismissal() {
+        sut.send(.hotkeyPressed(context: .prose))
+        var hideCount = 0
+        sut.onHidePanel = { hideCount += 1 }
+
+        sut.send(.escapePressed)
+
+        XCTAssertEqual(sut.state, .cancelled)
+        XCTAssertEqual(hideCount, 1)
+    }
+
+    private func requireActiveSessionID() -> UUID {
+        guard let sessionID = sut.activeSessionID else {
+            XCTFail("Expected an active dictation session")
+            return UUID()
+        }
+        return sessionID
     }
 }

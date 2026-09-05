@@ -7,6 +7,7 @@ import LaunchAtLogin
 /// Provides configuration for shortcut, transcription mode, language, and API settings.
 /// Model selection is automatic based on system capabilities, with manual override in Advanced.
 struct SettingsView: View {
+    static let windowSize = NSSize(width: 540, height: 700)
     
     // MARK: - Static Helpers
     
@@ -44,6 +45,12 @@ struct SettingsView: View {
     
     /// Model manager for download state
     @StateObject private var modelManager = ModelManager.shared
+    @StateObject private var parakeetModels = ParakeetModelManager.shared
+    @StateObject private var microphones = AudioInputDeviceManager.shared
+    @AppStorage("localSpeechEngine") private var localEngineRaw = LocalSpeechEngine.whisper.rawValue
+    @AppStorage("dictationActivationMode") private var activationMode = DictationActivationMode.toggle.rawValue
+    @AppStorage("inputDeviceUID") private var inputDeviceUID = ""
+    @State private var downloadTask: Task<Void, Never>?
     
     // MARK: - Computed
     
@@ -51,20 +58,44 @@ struct SettingsView: View {
         TranscriptionMode(rawValue: transcriptionModeRaw) ?? .local
     }
     
+    private var localEngine: LocalSpeechEngine {
+        LocalSpeechEngine(rawValue: localEngineRaw) ?? .whisper
+    }
+
+    private var languageChoices: [String: String] {
+        var choices = WhisperLanguages.all
+        choices["mt"] = "Maltese"
+        return choices
+    }
+
     // MARK: - Body
     
     var body: some View {
         Form {
-            // MARK: Shortcut Section
-            Section {
+            Section("Recording") {
                 KeyboardShortcuts.Recorder("Keyboard Shortcut", name: .toggleDictation)
-            }
-            
-            // MARK: General Settings Section
-            Section {
+                Picker("Activation", selection: $activationMode) {
+                    Text("Press to start / stop").tag(DictationActivationMode.toggle.rawValue)
+                    Text("Hold to talk").tag(DictationActivationMode.hold.rawValue)
+                }
+                Picker("Microphone", selection: $inputDeviceUID) {
+                    Text("System Default").tag("")
+                    ForEach(microphones.devices) { device in
+                        Text(device.name).tag(device.uid)
+                    }
+                    if !inputDeviceUID.isEmpty && microphones.device(withUID: inputDeviceUID) == nil {
+                        Text("Unavailable microphone").tag(inputDeviceUID)
+                    }
+                }
+                if !inputDeviceUID.isEmpty && microphones.device(withUID: inputDeviceUID) == nil {
+                    Text("Reconnect your selected microphone or choose another input.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Button("Refresh Microphones") { microphones.refresh() }
                 LaunchAtLogin.Toggle("Launch at Login")
             }
-            
+
             // MARK: Transcription Mode Section
             Section {
                 Picker("Mode", selection: Binding(
@@ -78,7 +109,8 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
                 
                 // Show inline download progress when downloading recommended model
-                if let progress = modelManager.downloadProgress[modelManager.recommendedModelName] {
+                if transcriptionMode == .local, localEngine == .whisper,
+                   let progress = modelManager.downloadProgress[modelManager.recommendedModelName] {
                     HStack(spacing: 8) {
                         ProgressView(value: progress)
                             .progressViewStyle(.linear)
@@ -97,20 +129,29 @@ struct SettingsView: View {
             // MARK: Language Section (Universal - used by both modes)
             Section {
                 Picker("Language", selection: $language) {
-                    ForEach(Array(WhisperLanguages.all.sorted(by: { $0.value < $1.value })), id: \.key) { code, name in
+                    ForEach(Array(languageChoices.sorted(by: { $0.value < $1.value })), id: \.key) { code, name in
                         Text(name).tag(code)
                     }
                 }
                 .onChange(of: language) { _, newLanguage in
                     // Trigger smart model selection when language changes
                     Task {
-                        await modelManager.handleLanguageChange(to: newLanguage)
+                        if transcriptionMode == .local && localEngine == .whisper {
+                            await modelManager.handleLanguageChange(to: newLanguage)
+                        }
+                        await TranscriptionCoordinator.shared.prewarmSelectedLocalModel()
                     }
                 }
                 
-                Text("Language to recognize")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                if transcriptionMode == .local && !localEngine.supportsLanguage(language) {
+                    Text("Choose an engine that supports this language.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else if transcriptionMode == .local && localEngine == .parakeetV3 {
+                    Text("Parakeet v3 recognizes 25 European languages. The language selection is a hint.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             
             // MARK: Local Settings Section (Advanced)
@@ -123,22 +164,31 @@ struct SettingsView: View {
                 cloudSettingsSection
             }
             
-            // MARK: Updates Section
+            DictionarySettingsView()
             UpdatesSettingsSection()
         }
         .formStyle(.grouped)
-        .frame(width: 420, height: 480)
+        .frame(width: Self.windowSize.width, height: Self.windowSize.height)
         .onAppear {
+            microphones.refresh()
+            if language.isEmpty { language = "auto" }
             // Only load API key if already in cloud mode (rare - user changed mode previously)
             if transcriptionMode == .cloud {
                 loadApiKey()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            microphones.refresh()
+        }
+        .onChange(of: localEngineRaw) { _, _ in
+            Task { await TranscriptionCoordinator.shared.prewarmSelectedLocalModel() }
         }
         .onChange(of: transcriptionModeRaw) { _, newValue in
             // Load API key when user switches to cloud mode
             if TranscriptionMode(rawValue: newValue) == .cloud {
                 loadApiKey()
             }
+            Task { await TranscriptionCoordinator.shared.prewarmSelectedLocalModel() }
         }
         .onChange(of: apiKey, initial: false) { _, newValue in
             // Save API key changes (initial: false prevents firing on load)
@@ -150,19 +200,76 @@ struct SettingsView: View {
     
     @ViewBuilder
     private var localSettingsSection: some View {
-        Section {
-            DisclosureGroup("Advanced", isExpanded: $isLocalAdvancedExpanded) {
-                AdvancedModelSettingsView(modelManager: modelManager)
-                    .padding(.top, 8)
+        Section("On-device speech") {
+            Picker("Engine", selection: $localEngineRaw) {
+                ForEach(LocalSpeechEngine.allCases, id: \.rawValue) { engine in
+                    Text(engine.displayName).tag(engine.rawValue)
+                }
+            }
+            .disabled(downloadTask != nil)
+            if let version = localEngine.parakeetVersion {
+                parakeetSettings(version)
+            } else {
+                DisclosureGroup("Whisper Models", isExpanded: $isLocalAdvancedExpanded) {
+                    AdvancedModelSettingsView(modelManager: modelManager)
+                        .padding(.top, 8)
+                }
             }
         }
     }
-    
+
+    @ViewBuilder
+    private func parakeetSettings(_ version: ParakeetModelVersion) -> some View {
+        if parakeetModels.readiness[version] == .downloading {
+            ProgressView(value: parakeetModels.downloadProgress[version] ?? 0)
+            Text("Downloading and preparing the model…")
+                .font(.caption)
+            Button("Cancel Download") { downloadTask?.cancel() }
+        } else {
+            if parakeetModels.isDownloaded(version) {
+                Label("Downloaded · works offline", systemImage: "checkmark.circle")
+                    .font(.caption)
+            } else {
+                Text("Download the model once to use it on this Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let error = parakeetModels.lastError[version] {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+            if !parakeetModels.isDownloaded(version) || parakeetModels.lastError[version] != nil {
+                Button("Download and Prepare Model") {
+                    downloadTask = Task {
+                        do {
+                            try await parakeetModels.prepare(version)
+                            await TranscriptionCoordinator.shared.prewarmSelectedLocalModel()
+                        } catch {
+                            // The model manager publishes the error next to this button.
+                        }
+                        downloadTask = nil
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Cloud Settings Section
     
     @ViewBuilder
     private var cloudSettingsSection: some View {
-        Section {
+        Section("Cloud service") {
+            Menu("Use a Preset") {
+                ForEach(CloudTranscriptionPreset.allCases) { preset in
+                    Button(preset.name) {
+                        baseURL = preset.baseURL
+                        cloudModel = preset.model
+                        cloudTemperature = 0
+                    }
+                }
+            }
+            Text("\(cloudModel) · audio is sent to your configured service")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     if isApiKeyVisible {
@@ -206,7 +313,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         TextField("Model", text: $cloudModel)
                             .textFieldStyle(.roundedBorder)
-                        Text("Default: whisper-1. Groq: whisper-large-v3-turbo")
+                        Text("Use a preset or enter your service's model name.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -221,6 +328,7 @@ struct SettingsView: View {
                                 .frame(width: 30)
                         }
                         Slider(value: $cloudTemperature, in: 0...1, step: 0.1)
+                            .disabled(cloudModel == "gpt-transcribe" || cloudModel.hasPrefix("gpt-transcribe-"))
                         Text("0 = deterministic, 1 = more variation")
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -259,6 +367,7 @@ struct AdvancedModelSettingsView: View {
     /// Alert for download confirmation
     @State private var showDownloadAlert = false
     @State private var modelToDownload: WhisperModel?
+    @State private var downloadError: String?
     
     /// Whether current model supports selected language
     private var isModelCompatible: Bool {
@@ -346,11 +455,16 @@ struct AdvancedModelSettingsView: View {
                 }
             }
             
+            if let downloadError {
+                Text(downloadError).font(.caption).foregroundStyle(.red)
+            }
+
             // Reset to automatic button (only show if manual override is active)
             if modelManager.isManualModelOverride {
                 Button("Reset to Automatic") {
                     Task {
                         await modelManager.resetToAutomatic()
+                        await TranscriptionCoordinator.shared.prewarmSelectedLocalModel()
                     }
                 }
                 .buttonStyle(.link)
@@ -360,11 +474,14 @@ struct AdvancedModelSettingsView: View {
             Button("Download") {
                 if let model = modelToDownload {
                     Task {
-                        await modelManager.downloadModel(model)
-                        // After download, select it
-                        if modelManager.isModelDownloaded(model.name) {
+                        downloadError = nil
+                        do {
+                            try await modelManager.downloadModel(model)
                             modelManager.selectedModelName = model.name
                             modelManager.isManualModelOverride = true
+                            await TranscriptionCoordinator.shared.prewarmSelectedLocalModel()
+                        } catch {
+                            downloadError = error.localizedDescription
                         }
                     }
                 }
@@ -381,7 +498,8 @@ struct AdvancedModelSettingsView: View {
     
     /// Current download progress for selected model, if any
     private var currentDownloadProgress: Double? {
-        modelManager.downloadProgress[modelManager.selectedModelName]
+        let name = modelToDownload?.name ?? modelManager.selectedModelName
+        return modelManager.downloadProgress[name]
     }
     
     /// Handles model selection, prompting for download if needed
@@ -390,6 +508,7 @@ struct AdvancedModelSettingsView: View {
         if modelManager.isModelDownloaded(modelName) {
             modelManager.selectedModelName = modelName
             modelManager.isManualModelOverride = true
+            Task { await TranscriptionCoordinator.shared.prewarmSelectedLocalModel() }
             return
         }
         

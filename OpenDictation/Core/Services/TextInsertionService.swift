@@ -16,7 +16,7 @@ enum TextDeliveryResult: Equatable {
 /// 1. Save current clipboard state (all types, not just string)
 /// 2. Set text to clipboard with multi-tier changeCount verification
 /// 3. Simulate Cmd+V via CGEvent with explicit key events
-/// 4. Restore previous clipboard state after synchronous delay
+/// 4. Restore previous clipboard state after a bounded delay
 ///
 /// Hardening techniques from industry analysis:
 /// - `.combinedSessionState` for proper event coordination
@@ -32,6 +32,7 @@ final class TextInsertionService {
     private let logger = Logger(subsystem: "com.opendictation", category: "TextInsertionService")
     private let accessibilityChecker: AccessibilityChecker
     private let pasteSimulator: (() -> Bool)?
+    private let clipboardRestoreDelay: Duration
     
     // MARK: - Concurrency Control
     
@@ -48,6 +49,9 @@ final class TextInsertionService {
     
     /// The text we inserted (for verification before restore)
     private var insertedText: String?
+
+    /// Fallback restoration that does not depend on overlay availability or dismissal.
+    private var clipboardRestoreTask: Task<Void, Never>?
     
     /// Saved pasteboard contents for restoration
     private struct SavedPasteboardContents {
@@ -58,10 +62,12 @@ final class TextInsertionService {
     
     init(
         accessibilityChecker: AccessibilityChecker = SystemAccessibilityChecker(),
-        pasteSimulator: (() -> Bool)? = nil
+        pasteSimulator: (() -> Bool)? = nil,
+        clipboardRestoreDelay: Duration = .milliseconds(900)
     ) {
         self.accessibilityChecker = accessibilityChecker
         self.pasteSimulator = pasteSimulator
+        self.clipboardRestoreDelay = clipboardRestoreDelay
     }
     
     // MARK: - Public API
@@ -71,6 +77,9 @@ final class TextInsertionService {
     /// - Parameter text: The text to insert.
     /// - Returns: A delivery result describing whether text was pasted, copied, or failed.
     func insertText(_ text: String) -> TextDeliveryResult {
+        // A new delivery must not replace restoration state from an earlier paste.
+        restoreClipboard()
+
         // Acquire lock and check for concurrent operation
         Self.insertionLock.lock()
         
@@ -118,11 +127,11 @@ final class TextInsertionService {
                 return .failed("Failed to simulate paste.")
             }
             
-            // 5. Store for deferred restoration (will be restored after UI dismisses)
-            // This eliminates the race condition by waiting for the animation to complete
-            // before restoring, giving the target app ~650ms+ to process the paste.
+            // 5. Restore after enough time for the target app to consume the paste.
+            // The overlay also restores on dismissal, but this task covers Macs without one.
             self.pendingRestore = savedContents
             self.insertedText = text
+            scheduleClipboardRestore()
             
             return .inserted
         } else {
@@ -137,33 +146,51 @@ final class TextInsertionService {
     
     /// Restores the clipboard to its previous state after a successful paste.
     ///
-    /// Call this after the UI has fully dismissed to ensure the target app
-    /// has had sufficient time (~650ms+) to process the paste event.
+    /// The overlay may call this after dismissal. A fallback task calls it when no
+    /// overlay exists, so clipboard cleanup never depends on UI lifecycle.
     func restoreClipboard() {
+        clipboardRestoreTask?.cancel()
+        clipboardRestoreTask = nil
+
         guard let savedContents = pendingRestore else {
-            logger.debug("No pending clipboard restore")
+            insertedText = nil
             return
         }
-        
+
+        let expectedText = insertedText
+        pendingRestore = nil
+        insertedText = nil
+
         let pasteboard = NSPasteboard.general
         
         // Only restore if clipboard still contains our inserted text
         // (avoids overwriting if user copied something else in the meantime)
-        if let expected = insertedText,
+        if let expected = expectedText,
            let current = pasteboard.string(forType: .string),
            current == expected {
             restorePasteboardContents(savedContents, to: pasteboard)
-            logger.debug("Clipboard restored after UI dismiss")
+            logger.debug("Clipboard restored after paste")
         } else {
             logger.debug("Clipboard changed since paste, skipping restore")
         }
-        
-        // Clear pending state
-        pendingRestore = nil
-        insertedText = nil
     }
     
     // MARK: - Private Helpers
+
+    private func scheduleClipboardRestore() {
+        clipboardRestoreTask?.cancel()
+        let delay = clipboardRestoreDelay
+
+        clipboardRestoreTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+
+            self?.restoreClipboard()
+        }
+    }
     
     /// Saves all pasteboard contents for later restoration.
     ///

@@ -17,23 +17,30 @@ enum ContextProfile: Equatable {
   }
 
   /// The initial prompt to bias Whisper transcription for this context.
-  /// Returns nil for prose (vanilla Whisper behavior with style hint).
+  /// Includes a bounded list of terms from the personal dictionary when available.
   var whisperPrompt: String? {
+    let basePrompt: String
     switch self {
     case .prose:
       // Natural language prompt for proper punctuation/capitalization.
       // Pattern from VoiceInk - a greeting that demonstrates the style.
-      return "Hello, how are you doing today? I hope you're having a great day."
+      basePrompt = "Hello, how are you doing today? I hope you're having a great day."
 
     case .code:
       // Natural sentence with tech vocabulary for style emulation.
       // Whisper emulates STYLE, not instructions - use real sentences.
       // Pattern from VoiceInk: natural language that demonstrates the style.
-      return """
+      basePrompt = """
         I'm working on TypeScript and Python code with React, NextJS, Supabase, \
         and Vercel. I'll run git pull, git push, use npm and bun, and work with \
         the API, SDK, and CLI. Let me check the useEffect and useState hooks.
         """
     }
+
+    guard let dictionary = try? DictationDictionary.load(),
+          let vocabulary = dictionary.promptVocabulary else {
+      return basePrompt
+    }
+    return "\(basePrompt) Vocabulary: \(vocabulary)."
   }
 }
