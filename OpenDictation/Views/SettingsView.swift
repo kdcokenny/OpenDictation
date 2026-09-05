@@ -51,6 +51,7 @@ struct SettingsView: View {
     @AppStorage("dictationActivationMode") private var activationMode = DictationActivationMode.toggle.rawValue
     @AppStorage("inputDeviceUID") private var inputDeviceUID = ""
     @State private var downloadTask: Task<Void, Never>?
+    @State private var parakeetDownloadError: String?
     
     // MARK: - Computed
     
@@ -181,6 +182,7 @@ struct SettingsView: View {
             microphones.refresh()
         }
         .onChange(of: localEngineRaw) { _, _ in
+            parakeetDownloadError = nil
             Task { await TranscriptionCoordinator.shared.prewarmSelectedLocalModel() }
         }
         .onChange(of: transcriptionModeRaw) { _, newValue in
@@ -224,7 +226,7 @@ struct SettingsView: View {
             ProgressView(value: parakeetModels.downloadProgress[version] ?? 0)
             Text("Downloading and preparing the model…")
                 .font(.caption)
-            Button("Cancel Download") { downloadTask?.cancel() }
+            Button("Cancel Download") { parakeetModels.cancelPreparation(version) }
         } else {
             if parakeetModels.isDownloaded(version) {
                 Label("Downloaded · works offline", systemImage: "checkmark.circle")
@@ -236,21 +238,28 @@ struct SettingsView: View {
             }
             if let error = parakeetModels.lastError[version] {
                 Text(error).font(.caption).foregroundStyle(.red)
+            } else if let error = parakeetDownloadError {
+                Text(error).font(.caption).foregroundStyle(.red)
             }
             if !parakeetModels.isDownloaded(version) || parakeetModels.lastError[version] != nil {
                 Button("Download and Prepare Model") {
+                    parakeetDownloadError = nil
                     downloadTask = Task {
                         do {
                             try await parakeetModels.prepare(version)
                             await TranscriptionCoordinator.shared.prewarmSelectedLocalModel()
+                        } catch is CancellationError {
+                            // Cancellation leaves the model available for a later retry.
                         } catch {
-                            // The model manager publishes the error next to this button.
+                            parakeetDownloadError = error.localizedDescription
                         }
                         downloadTask = nil
                     }
                 }
             }
         }
+        Link("Model licenses and attribution", destination: URL(string: "https://github.com/kdcokenny/OpenDictation/blob/main/THIRD_PARTY_NOTICES.md")!)
+            .font(.caption)
     }
 
     // MARK: - Cloud Settings Section

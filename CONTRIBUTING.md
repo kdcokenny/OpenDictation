@@ -1,6 +1,6 @@
 # Contributing to Open Dictation
 
-Open Dictation requires macOS 14 or later, Xcode 16.3 or later, and an Apple Silicon Mac. Install the development tools with Homebrew:
+Open Dictation requires macOS 14 or later, Xcode 26 or later, and an Apple Silicon Mac. Install the development tools with Homebrew:
 
 ```bash
 brew install xcodegen swiftlint

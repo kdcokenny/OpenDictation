@@ -30,7 +30,6 @@ enum ParakeetModelReadiness: Equatable, Sendable {
 
 enum ParakeetError: LocalizedError, Sendable {
     case modelNotDownloaded(ParakeetModelVersion)
-    case preparationInProgress(ParakeetModelVersion)
     case modelOperationInProgress
     case unsupportedLanguage(String, ParakeetModelVersion)
 
@@ -38,8 +37,6 @@ enum ParakeetError: LocalizedError, Sendable {
         switch self {
         case .modelNotDownloaded(let version):
             return "\(version.displayName) is not downloaded. Download it in Settings before using it."
-        case .preparationInProgress(let version):
-            return "\(version.displayName) is already being prepared."
         case .modelOperationInProgress:
             return "Another Parakeet model operation is still running."
         case .unsupportedLanguage(let language, let version):
@@ -52,6 +49,11 @@ enum ParakeetError: LocalizedError, Sendable {
 /// Only `prepare(_:)` may download. All other loading paths require a complete local cache.
 @MainActor
 final class ParakeetModelManager: ObservableObject {
+    private struct Preparation: Sendable {
+        let id: UUID
+        let task: Task<AsrModels, Error>
+    }
+
     static let shared = ParakeetModelManager()
 
     @Published private(set) var downloadProgress: [ParakeetModelVersion: Double] = [:]
@@ -59,6 +61,7 @@ final class ParakeetModelManager: ObservableObject {
     @Published private(set) var lastError: [ParakeetModelVersion: String] = [:]
 
     private var preparedModels: [ParakeetModelVersion: AsrModels] = [:]
+    private var preparations: [ParakeetModelVersion: Preparation] = [:]
     private let cacheDirectory: (ParakeetModelVersion) -> URL
     private var modelOperationInProgress = false
 
@@ -83,40 +86,80 @@ final class ParakeetModelManager: ObservableObject {
             return
         }
 
-        guard readiness[version] != .downloading else {
-            throw ParakeetError.preparationInProgress(version)
+        if let preparation = preparations[version] {
+            try await waitForPreparation(preparation, version: version)
+            return
         }
         guard !modelOperationInProgress else {
             throw ParakeetError.modelOperationInProgress
         }
 
         modelOperationInProgress = true
-        defer { modelOperationInProgress = false }
         readiness[version] = .downloading
         downloadProgress[version] = 0
         lastError.removeValue(forKey: version)
 
-        do {
+        let preparationID = UUID()
+        let directory = cacheDirectory(version)
+        let fluidVersion = version.fluidAudioVersion
+        let task = Task<AsrModels, Error> { [weak self] in
             try Task.checkCancellation()
-            let fluidVersion = version.fluidAudioVersion
-            let models = try await AsrModels.downloadAndLoad(
-                to: cacheDirectory(version),
+            return try await AsrModels.downloadAndLoad(
+                to: directory,
                 version: fluidVersion,
                 progressHandler: { [weak self] progress in
                     Task { @MainActor [weak self] in
-                        guard let self, self.readiness[version] == .downloading else {
-                            return
-                        }
-                        self.downloadProgress[version] = progress.fractionCompleted
+                        self?.recordProgress(
+                            progress.fractionCompleted,
+                            for: version,
+                            preparationID: preparationID
+                        )
                     }
                 }
             )
+        }
+        let preparation = Preparation(id: preparationID, task: task)
+        preparations[version] = preparation
+        try await waitForPreparation(preparation, version: version)
+    }
+
+    func cancelPreparation(_ version: ParakeetModelVersion) {
+        preparations[version]?.task.cancel()
+    }
+
+    private func waitForPreparation(
+        _ preparation: Preparation,
+        version: ParakeetModelVersion
+    ) async throws {
+        do {
+            let models = try await withTaskCancellationHandler {
+                try await preparation.task.value
+            } onCancel: {
+                preparation.task.cancel()
+            }
+            guard !preparation.task.isCancelled else {
+                throw CancellationError()
+            }
             try Task.checkCancellation()
+
+            guard isCurrent(preparation, for: version) else { return }
             preparedModels[version] = models
             downloadProgress[version] = 1
             readiness[version] = .ready
+            preparations.removeValue(forKey: version)
+            modelOperationInProgress = false
         } catch {
-            if Task.isCancelled {
+            let wasCancelled = Task.isCancelled
+                || preparation.task.isCancelled
+                || error is CancellationError
+            guard isCurrent(preparation, for: version) else {
+                if wasCancelled { throw CancellationError() }
+                throw error
+            }
+
+            preparations.removeValue(forKey: version)
+            modelOperationInProgress = false
+            if wasCancelled {
                 downloadProgress.removeValue(forKey: version)
                 refreshReadiness(for: version)
                 throw CancellationError()
@@ -129,6 +172,23 @@ final class ParakeetModelManager: ObservableObject {
         }
     }
 
+    private func recordProgress(
+        _ progress: Double,
+        for version: ParakeetModelVersion,
+        preparationID: UUID
+    ) {
+        guard preparations[version]?.id == preparationID,
+              readiness[version] == .downloading else { return }
+        downloadProgress[version] = progress
+    }
+
+    private func isCurrent(
+        _ preparation: Preparation,
+        for version: ParakeetModelVersion
+    ) -> Bool {
+        preparations[version]?.id == preparation.id
+    }
+
     /// Loads an installed model to remove first-transcription latency.
     /// A missing or incomplete cache fails before FluidAudio is asked to load it.
     func prewarmIfInstalled(_ version: ParakeetModelVersion) async throws {
@@ -137,6 +197,7 @@ final class ParakeetModelManager: ObservableObject {
 
     func releasePreparedModels(for version: ParakeetModelVersion) {
         preparedModels.removeValue(forKey: version)
+        guard preparations[version] == nil else { return }
         refreshReadiness(for: version)
     }
 
@@ -187,6 +248,10 @@ final class ParakeetModelManager: ObservableObject {
     }
 
     private func refreshReadiness(for version: ParakeetModelVersion) {
+        guard preparations[version] == nil else {
+            readiness[version] = .downloading
+            return
+        }
         if preparedModels[version] != nil || isDownloaded(version) {
             readiness[version] = .ready
             lastError.removeValue(forKey: version)
