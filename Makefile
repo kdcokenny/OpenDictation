@@ -97,6 +97,7 @@ release: setup
 		-derivedDataPath '$(BUILD_DIR)' \
 		MARKETING_VERSION='$(RELEASE_VERSION)' \
 		CURRENT_PROJECT_VERSION='$(BUILD_NUMBER)' \
+		ARCHS=arm64 \
 		$(XCODEBUILD_FLAGS) \
 		clean build
 	@scripts/set-app-version.sh '$(APP_PATH)' '$(RELEASE_VERSION)' '$(BUILD_NUMBER)'
