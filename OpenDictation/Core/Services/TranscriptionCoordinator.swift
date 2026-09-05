@@ -3,10 +3,16 @@ import os.log
 
 /// Owns engine selection and the shared output pipeline for every dictation and retry.
 actor TranscriptionCoordinator {
+    private struct TranscriptionWaiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
     static let shared = TranscriptionCoordinator()
 
     private let logger = Logger.app(category: "TranscriptionCoordinator")
     private var isTranscribing = false
+    private var transcriptionWaiters: [TranscriptionWaiter] = []
     private var prewarmTask: Task<Void, Never>?
     private var needsPrewarm = false
 
@@ -28,18 +34,12 @@ actor TranscriptionCoordinator {
     }
 
     func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
-        try Task.checkCancellation()
-        guard !isTranscribing else {
-            throw TranscriptionError.invalidConfiguration("Another transcription is finishing. Try again shortly.")
+        try await withTranscriptionSlot {
+            try await self.transcribeWhenAdmitted(audioURL: audioURL, context: context)
         }
-        isTranscribing = true
-        defer {
-            isTranscribing = false
-            if needsPrewarm {
-                Task { await prewarmSelectedLocalModel() }
-            }
-        }
+    }
 
+    private func transcribeWhenAdmitted(audioURL: URL, context: ContextProfile) async throws -> String {
         let mode = currentMode
         let dictionary = try DictationDictionary.load()
         let engine = mode == .local ? try selectedLocalEngine() : nil
@@ -52,9 +52,12 @@ actor TranscriptionCoordinator {
         await prewarmTask?.value
         try Task.checkCancellation()
         await releaseInactiveEngines(keeping: engine)
-        if engine == .whisper,
-           !(await ModelManager.shared.currentModelSupportsLanguage(language)) {
-            throw TranscriptionError.invalidConfiguration("Choose a Whisper model that supports your language in Settings.")
+        if engine == .whisper {
+            let manager = await ModelManager.shared
+            await manager.waitForInitialScan()
+            guard await manager.currentModelSupportsLanguage(language) else {
+                throw TranscriptionError.invalidConfiguration("Choose a Whisper model that supports your language in Settings.")
+            }
         }
 
         let text: String
@@ -70,6 +73,67 @@ actor TranscriptionCoordinator {
         }
         try Task.checkCancellation()
         return dictionary.apply(to: TranscriptionOutputFilter.filter(text))
+    }
+
+    /// Serializes transcription while allowing a cancelled caller to leave the FIFO queue.
+    func withTranscriptionSlot<T: Sendable>(
+        _ operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        try await acquireTranscriptionSlot()
+        defer { releaseTranscriptionSlot() }
+
+        // A queued task can be cancelled at the same time its slot is handed off.
+        // Install the release above before observing that cancellation.
+        try Task.checkCancellation()
+        return try await operation()
+    }
+
+    var waitingTranscriptionCount: Int {
+        transcriptionWaiters.count
+    }
+
+    private func acquireTranscriptionSlot() async throws {
+        try Task.checkCancellation()
+        let waiterID = UUID()
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else if isTranscribing {
+                    transcriptionWaiters.append(
+                        TranscriptionWaiter(id: waiterID, continuation: continuation)
+                    )
+                } else {
+                    isTranscribing = true
+                    continuation.resume()
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelTranscriptionWaiter(id: waiterID) }
+        }
+    }
+
+    private func cancelTranscriptionWaiter(id: UUID) {
+        guard let index = transcriptionWaiters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        let waiter = transcriptionWaiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func releaseTranscriptionSlot() {
+        guard !transcriptionWaiters.isEmpty else {
+            isTranscribing = false
+            if needsPrewarm {
+                Task { await prewarmSelectedLocalModel() }
+            }
+            return
+        }
+
+        let nextWaiter = transcriptionWaiters.removeFirst()
+        nextWaiter.continuation.resume()
     }
 
     /// Warms installed models only. Downloads require an explicit Settings action.
@@ -134,6 +198,7 @@ actor TranscriptionCoordinator {
                         ? nil : "Download \(engine.displayName) in Settings."
                 }
                 let manager = await ModelManager.shared
+                await manager.waitForInitialScan()
                 guard await manager.currentModelSupportsLanguage(language) else {
                     return "Choose a Whisper model that supports your language in Settings."
                 }

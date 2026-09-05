@@ -47,8 +47,9 @@ final class TextInsertionService {
     /// Saved pasteboard contents pending restoration (set after successful paste)
     private var pendingRestore: SavedPasteboardContents?
     
-    /// The text we inserted (for verification before restore)
-    private var insertedText: String?
+    /// Pasteboard generation written by this service. Any later write belongs to
+    /// the user or another app, even when it contains the same text.
+    private var insertedPasteboardChangeCount: Int?
 
     /// Fallback restoration that does not depend on overlay availability or dismissal.
     private var clipboardRestoreTask: Task<Void, Never>?
@@ -63,7 +64,7 @@ final class TextInsertionService {
     init(
         accessibilityChecker: AccessibilityChecker = SystemAccessibilityChecker(),
         pasteSimulator: (() -> Bool)? = nil,
-        clipboardRestoreDelay: Duration = .milliseconds(900)
+        clipboardRestoreDelay: Duration = .seconds(2)
     ) {
         self.accessibilityChecker = accessibilityChecker
         self.pasteSimulator = pasteSimulator
@@ -120,6 +121,8 @@ final class TextInsertionService {
         // We attempt to write and verify the clipboard up to 3 times with escalating delays.
         // This handles rare macOS pasteboard race conditions or system-level coalescing.
         if writeAndVerifyText(text, to: pasteboard) {
+            let insertedChangeCount = pasteboard.changeCount
+
             // 4. Simulate Cmd+V
             guard simulatePaste() else {
                 logger.error("Failed to simulate paste. Aborting paste and restoring original clipboard.")
@@ -127,10 +130,10 @@ final class TextInsertionService {
                 return .failed("Failed to simulate paste.")
             }
             
-            // 5. Restore after enough time for the target app to consume the paste.
-            // The overlay also restores on dismissal, but this task covers Macs without one.
+            // 5. The overlay normally restores on dismissal. A longer timer covers Macs
+            // without an overlay and other cases where dismissal never arrives.
             self.pendingRestore = savedContents
-            self.insertedText = text
+            self.insertedPasteboardChangeCount = insertedChangeCount
             scheduleClipboardRestore()
             
             return .inserted
@@ -153,21 +156,20 @@ final class TextInsertionService {
         clipboardRestoreTask = nil
 
         guard let savedContents = pendingRestore else {
-            insertedText = nil
+            insertedPasteboardChangeCount = nil
             return
         }
 
-        let expectedText = insertedText
+        let expectedChangeCount = insertedPasteboardChangeCount
         pendingRestore = nil
-        insertedText = nil
+        insertedPasteboardChangeCount = nil
 
         let pasteboard = NSPasteboard.general
         
-        // Only restore if clipboard still contains our inserted text
-        // (avoids overwriting if user copied something else in the meantime)
-        if let expected = expectedText,
-           let current = pasteboard.string(forType: .string),
-           current == expected {
+        // changeCount identifies writes, so copying identical text still protects the
+        // user's newer clipboard contents from restoration.
+        if let expectedChangeCount,
+           pasteboard.changeCount == expectedChangeCount {
             restorePasteboardContents(savedContents, to: pasteboard)
             logger.debug("Clipboard restored after paste")
         } else {

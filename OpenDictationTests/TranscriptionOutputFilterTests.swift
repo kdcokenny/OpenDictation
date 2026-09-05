@@ -30,7 +30,7 @@ final class TranscriptionOutputFilterTests: XCTestCase {
         )
     }
 
-    func testPreservesFillersByDefaultBehavior() {
+    func testPreservesFillersWhenRemovalIsDisabled() {
         let text = "Um, I think, uh, this works."
 
         XCTAssertEqual(
@@ -39,34 +39,27 @@ final class TranscriptionOutputFilterTests: XCTestCase {
         )
     }
 
-    func testStaticFilterPreservesFillersWhenPreferenceIsUnset() {
-        let defaults = UserDefaults.standard
-        let previousValue = defaults.object(forKey: TranscriptionOutputFilter.removeFillerWordsKey)
-        defaults.removeObject(forKey: TranscriptionOutputFilter.removeFillerWordsKey)
-        defer {
-            if let previousValue {
-                defaults.set(previousValue, forKey: TranscriptionOutputFilter.removeFillerWordsKey)
-            } else {
-                defaults.removeObject(forKey: TranscriptionOutputFilter.removeFillerWordsKey)
-            }
-        }
+    func testStoredPreferenceDefaultsToPreservingFillers() throws {
+        let suiteName = "TranscriptionOutputFilterTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        XCTAssertEqual(TranscriptionOutputFilter.filter("Um, keep this."), "Um, keep this.")
+        XCTAssertEqual(
+            TranscriptionOutputFilter.filter("Um, keep this.", defaults: defaults),
+            "Um, keep this."
+        )
     }
 
-    func testStaticFilterReadsEnabledPreference() {
-        let defaults = UserDefaults.standard
-        let previousValue = defaults.object(forKey: TranscriptionOutputFilter.removeFillerWordsKey)
+    func testStoredPreferenceEnablesFillerRemoval() throws {
+        let suiteName = "TranscriptionOutputFilterTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set(true, forKey: TranscriptionOutputFilter.removeFillerWordsKey)
-        defer {
-            if let previousValue {
-                defaults.set(previousValue, forKey: TranscriptionOutputFilter.removeFillerWordsKey)
-            } else {
-                defaults.removeObject(forKey: TranscriptionOutputFilter.removeFillerWordsKey)
-            }
-        }
 
-        XCTAssertEqual(TranscriptionOutputFilter.filter("Um, remove this."), "remove this.")
+        XCTAssertEqual(
+            TranscriptionOutputFilter.filter("Um, remove this.", defaults: defaults),
+            "remove this."
+        )
     }
 
     func testRemovesFillersWhenEnabledWithoutMatchingInsideWords() {
@@ -75,6 +68,15 @@ final class TranscriptionOutputFilterTests: XCTestCase {
         XCTAssertEqual(
             TranscriptionOutputFilter.filter(text, removeFillerWords: true),
             "the album and hummus, remain."
+        )
+    }
+
+    func testPreservesMultilineIndentationWhenNoCleanupMatches() {
+        let text = "First line\n    indented with spaces\n\tindented with a tab"
+
+        XCTAssertEqual(
+            TranscriptionOutputFilter.filter(text, removeFillerWords: false),
+            text
         )
     }
 }

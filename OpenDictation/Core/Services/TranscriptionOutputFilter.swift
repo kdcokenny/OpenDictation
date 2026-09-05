@@ -12,10 +12,10 @@ struct TranscriptionOutputFilter {
     ]
 
     /// Applies the user's saved cleanup preference.
-    static func filter(_ text: String) -> String {
+    static func filter(_ text: String, defaults: UserDefaults = .standard) -> String {
         filter(
             text,
-            removeFillerWords: UserDefaults.standard.bool(forKey: removeFillerWordsKey)
+            removeFillerWords: defaults.bool(forKey: removeFillerWordsKey)
         )
     }
 

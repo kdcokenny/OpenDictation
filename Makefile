@@ -65,7 +65,11 @@ models:
 generate:
 	@xcodegen generate --spec project.yml
 
-setup: check whisper models generate
+setup:
+	@$(MAKE) check
+	@$(MAKE) whisper
+	@$(MAKE) models
+	@$(MAKE) generate
 	@echo "Setup complete"
 
 build: setup
@@ -122,7 +126,10 @@ lint-fix:
 	@swiftlint --fix
 	@swiftlint --strict
 
-ci: lint test verify-release
+ci:
+	@$(MAKE) lint
+	@$(MAKE) test
+	@$(MAKE) verify-release
 
 dmg: verify-release
 	@command -v create-dmg >/dev/null || { echo "create-dmg is required. Install it with: brew install create-dmg" >&2; exit 1; }

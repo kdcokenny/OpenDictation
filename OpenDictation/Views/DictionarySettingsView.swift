@@ -148,9 +148,10 @@ struct DictionarySettingsView: View {
     }
 
     private func makeDictionary() throws -> DictationDictionary {
-        let vocabulary = vocabularyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let trimmedVocabulary = vocabularyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let vocabulary = trimmedVocabulary.isEmpty
             ? []
-            : vocabularyText.components(separatedBy: .newlines)
+            : trimmedVocabulary.components(separatedBy: .newlines)
         let replacements = replacementRows.map {
             DictationDictionary.Replacement(
                 source: $0.source,

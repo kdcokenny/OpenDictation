@@ -4,6 +4,11 @@ import os.log
 
 /// Offline Parakeet provider fixed to one model version for its full lifetime.
 actor ParakeetTranscriptionProvider: TranscriptionProvider {
+    private struct ManagerLoad: Sendable {
+        let id: UUID
+        let task: Task<AsrManager, Error>
+    }
+
     static let english = ParakeetTranscriptionProvider(version: .v2)
     static let multilingual = ParakeetTranscriptionProvider(version: .v3)
 
@@ -11,7 +16,7 @@ actor ParakeetTranscriptionProvider: TranscriptionProvider {
 
     private let logger = Logger.app(category: "ParakeetTranscriptionProvider")
     private var asrManager: AsrManager?
-    private var managerLoadTask: Task<AsrManager, Error>?
+    private var managerLoad: ManagerLoad?
 
     init(version: ParakeetModelVersion) {
         self.version = version
@@ -44,8 +49,8 @@ actor ParakeetTranscriptionProvider: TranscriptionProvider {
     }
 
     func releaseModels() async {
-        managerLoadTask?.cancel()
-        managerLoadTask = nil
+        managerLoad?.task.cancel()
+        managerLoad = nil
         asrManager = nil
         await ParakeetModelManager.shared.releasePreparedModels(for: version)
     }
@@ -55,12 +60,12 @@ actor ParakeetTranscriptionProvider: TranscriptionProvider {
             return asrManager
         }
 
-        if let managerLoadTask {
-            return try await managerLoadTask.value
+        if let managerLoad {
+            return try await waitForManager(managerLoad)
         }
 
         let version = version
-        let loadTask = Task {
+        let loadTask = Task<AsrManager, Error> {
             let models = try await ParakeetModelManager.shared.modelsIfInstalled(version)
             try Task.checkCancellation()
 
@@ -71,17 +76,37 @@ actor ParakeetTranscriptionProvider: TranscriptionProvider {
             )
             let manager = AsrManager(config: config)
             try await manager.loadModels(models)
+            try Task.checkCancellation()
             return manager
         }
-        managerLoadTask = loadTask
+        let load = ManagerLoad(id: UUID(), task: loadTask)
+        managerLoad = load
+        return try await waitForManager(load)
+    }
 
+    private func waitForManager(_ load: ManagerLoad) async throws -> AsrManager {
         do {
-            let manager = try await loadTask.value
-            managerLoadTask = nil
-            asrManager = manager
+            let manager = try await withTaskCancellationHandler {
+                try await load.task.value
+            } onCancel: {
+                load.task.cancel()
+            }
+            guard !load.task.isCancelled else { throw CancellationError() }
+            try Task.checkCancellation()
+
+            if managerLoad?.id == load.id {
+                managerLoad = nil
+                asrManager = manager
+            }
             return manager
         } catch {
-            managerLoadTask = nil
+            let wasCancelled = Task.isCancelled
+                || load.task.isCancelled
+                || error is CancellationError
+            if managerLoad?.id == load.id {
+                managerLoad = nil
+            }
+            if wasCancelled { throw CancellationError() }
             throw error
         }
     }

@@ -337,7 +337,7 @@ struct SettingsView: View {
                                 .frame(width: 30)
                         }
                         Slider(value: $cloudTemperature, in: 0...1, step: 0.1)
-                            .disabled(cloudModel == "gpt-transcribe" || cloudModel.hasPrefix("gpt-transcribe-"))
+                            .disabled(CloudTranscriptionConfiguration.isGPTTranscribe(cloudModel))
                         Text("0 = deterministic, 1 = more variation")
                             .font(.caption)
                             .foregroundColor(.secondary)

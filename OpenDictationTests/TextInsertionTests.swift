@@ -83,9 +83,12 @@ final class TextInsertionTests: XCTestCase {
         XCTAssertEqual(automaticRestoreSut.insertText("Dictated Text"), .inserted)
         XCTAssertEqual(pasteboard.string(forType: .string), "Dictated Text")
 
-        try await Task.sleep(for: .milliseconds(50))
+        let didRestore = try await waitForPasteboardString(
+            "Original Content",
+            timeout: 1
+        )
 
-        XCTAssertEqual(pasteboard.string(forType: .string), "Original Content")
+        XCTAssertTrue(didRestore, "Clipboard restoration did not finish before the timeout")
     }
     
     // MARK: - Fallback Logic
@@ -122,7 +125,7 @@ final class TextInsertionTests: XCTestCase {
     
     // MARK: - Verification Logic
     
-    func testRestoresOnVerificationFailure() {
+    func testDoesNotRestoreWhenClipboardChanges() {
         // This is hard to test without mocking the pasteboard, 
         // but we can verify the logic of restoreClipboard() 
         // doesn't restore if the clipboard was changed by user.
@@ -142,6 +145,35 @@ final class TextInsertionTests: XCTestCase {
         
         // Then - Should NOT restore original text because clipboard was modified
         XCTAssertEqual(pasteboard.string(forType: .string), "User Copied")
+    }
+
+    func testDoesNotRestoreAfterUserCopiesIdenticalText() {
+        pasteboard.declareTypes([.string], owner: nil)
+        pasteboard.setString("Original Content", forType: .string)
+
+        XCTAssertEqual(sut.insertText("Dictated Text"), .inserted)
+
+        pasteboard.clearContents()
+        pasteboard.setString("Dictated Text", forType: .string)
+        sut.restoreClipboard()
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "Dictated Text")
+    }
+
+    private func waitForPasteboardString(
+        _ expected: String,
+        timeout: TimeInterval
+    ) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            if pasteboard.string(forType: .string) == expected {
+                return true
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        return pasteboard.string(forType: .string) == expected
     }
 
     private func savePasteboardContents(

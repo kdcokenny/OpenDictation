@@ -51,37 +51,48 @@ final class ModelManagerTests: XCTestCase {
     func testInitializationCreatesDirectory() {
         XCTAssertTrue(FileManager.default.fileExists(atPath: tempDirectory.path))
     }
+
+    func testInitialScanDoesNotPublishInvalidModel() async throws {
+        let invalidModel = tempDirectory.appendingPathComponent(bundledModel.filename)
+        try Data("short".utf8).write(to: invalidModel)
+
+        let manager = ModelManager(modelsDirectory: tempDirectory, models: [bundledModel])
+        await manager.waitForInitialScan()
+
+        XCTAssertTrue(manager.downloadedModels.isEmpty)
+        XCTAssertNotNil(manager.downloadErrors[bundledModel.name])
+    }
     
-    func testLoadDownloadedModels() throws {
+    func testLoadDownloadedModels() async throws {
         // Given: Create a dummy model file
         let modelFile = tempDirectory.appendingPathComponent(bundledModel.filename)
         try validModelContents.write(to: modelFile)
         
         // When
-        sut.loadDownloadedModels()
+        await sut.loadDownloadedModels()
         
         // Then
         XCTAssertEqual(sut.downloadedModels.count, 1)
         XCTAssertEqual(sut.downloadedModels.first?.name, bundledModel.name)
     }
     
-    func testIsDownloaded() throws {
+    func testIsDownloaded() async throws {
         let model = bundledModel
         XCTAssertFalse(sut.isDownloaded(model))
         
         let path = tempDirectory.appendingPathComponent(model.filename)
         try validModelContents.write(to: path)
         
-        sut.loadDownloadedModels()
+        await sut.loadDownloadedModels()
         XCTAssertTrue(sut.isDownloaded(model))
     }
     
-    func testValidateSelectedModelFallsBackToBundled() throws {
+    func testValidateSelectedModelFallsBackToBundled() async throws {
         // Given: We have a bundled model file on disk
         let bundled = bundledModel
         let bundledPath = tempDirectory.appendingPathComponent(bundled.filename)
         try validModelContents.write(to: bundledPath)
-        sut.loadDownloadedModels()
+        await sut.loadDownloadedModels()
         
         // Set selected model to something non-existent
         sut.selectedModelName = "non-existent-model"
@@ -112,14 +123,48 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertFalse(sut.currentModelSupportsLanguage("en"))
     }
 
-    func testLoadDownloadedModelsRejectsWrongSize() throws {
+    func testLoadDownloadedModelsRejectsWrongSize() async throws {
         let path = tempDirectory.appendingPathComponent(bundledModel.filename)
         try Data("short".utf8).write(to: path)
 
-        sut.loadDownloadedModels()
+        await sut.loadDownloadedModels()
 
         XCTAssertTrue(sut.downloadedModels.isEmpty)
         XCTAssertNotNil(sut.downloadErrors[bundledModel.name])
+    }
+
+    func testInitializationRemovesOrphanedPartialFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ModelManagerOrphanTest_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let orphan = directory.appendingPathComponent(".model.crashed.partial")
+        try Data("incomplete".utf8).write(to: orphan)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -(25 * 60 * 60))],
+            ofItemAtPath: orphan.path
+        )
+
+        let manager = ModelManager(modelsDirectory: directory, models: [bundledModel])
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+        withExtendedLifetime(manager) {}
+    }
+
+    func testInitializationPreservesRecentPartialFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ModelManagerActivePartialTest_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let recentPartial = directory.appendingPathComponent(".model.active.partial")
+        try Data("in progress".utf8).write(to: recentPartial)
+
+        let manager = ModelManager(modelsDirectory: directory, models: [bundledModel])
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recentPartial.path))
+        withExtendedLifetime(manager) {}
     }
 
     func testValidatorRejectsWrongChecksum() throws {
@@ -141,6 +186,25 @@ final class ModelManagerTests: XCTestCase {
             guard case ModelValidationError.checksumMismatch = error else {
                 return XCTFail("Expected checksumMismatch, got \(error)")
             }
+        }
+    }
+
+    func testAsyncValidatorPropagatesCancellation() async throws {
+        let path = tempDirectory.appendingPathComponent(bundledModel.filename)
+        try validModelContents.write(to: path)
+
+        let validation = Task {
+            try await ModelFileValidator.validateAsync(fileAt: path, for: bundledModel)
+        }
+        validation.cancel()
+
+        do {
+            try await validation.value
+            XCTFail("Expected validation to be cancelled")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
         }
     }
 

@@ -13,9 +13,6 @@ actor WhisperContext {
     // MARK: - Properties
     
     private nonisolated(unsafe) var context: OpaquePointer?
-    private var languageCString: [CChar]?
-    private var promptCString: [CChar]?
-    private var vadPathCString: [CChar]?
     private var vadModelPath: String?
     
     private let logger = Logger.app(category: "WhisperContext")
@@ -109,24 +106,22 @@ actor WhisperContext {
         
         let maxThreads = max(1, min(8, cpuCount() - 2))
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
-        
-        // Set language
-        if language != "auto" {
-            languageCString = Array(language.utf8CString)
-            params.language = languageCString?.withUnsafeBufferPointer { $0.baseAddress }
-        } else {
-            languageCString = nil
-            params.language = nil
+
+        // whisper.cpp reads these pointers for the duration of whisper_full.
+        // Own their allocations until this function returns.
+        let languageBuffer = !language.isEmpty && language != "auto"
+            ? OwnedCString(language) : nil
+        let promptBuffer = initialPrompt.flatMap { prompt in
+            prompt.isEmpty ? nil : OwnedCString(prompt)
         }
-        
-        // Set initial prompt
-        if let prompt = initialPrompt, !prompt.isEmpty {
-            promptCString = Array(prompt.utf8CString)
-            params.initial_prompt = promptCString?.withUnsafeBufferPointer { $0.baseAddress }
-        } else {
-            promptCString = nil
-            params.initial_prompt = nil
+        let vadPathBuffer = vadModelPath.map(OwnedCString.init)
+        defer {
+            languageBuffer?.deallocate()
+            promptBuffer?.deallocate()
+            vadPathBuffer?.deallocate()
         }
+        params.language = languageBuffer.map { UnsafePointer($0.pointer) }
+        params.initial_prompt = promptBuffer.map { UnsafePointer($0.pointer) }
         
         // Configure parameters
         params.print_realtime = false
@@ -158,10 +153,9 @@ actor WhisperContext {
         whisper_reset_timings(context)
         
         // Configure VAD if model is available
-        if let vadModelPath = self.vadModelPath {
-            vadPathCString = Array(vadModelPath.utf8CString)
+        if let vadPathBuffer {
             params.vad = true
-            params.vad_model_path = vadPathCString?.withUnsafeBufferPointer { $0.baseAddress }
+            params.vad_model_path = UnsafePointer(vadPathBuffer.pointer)
             
             var vadParams = whisper_vad_default_params()
             vadParams.threshold = 0.50
@@ -174,7 +168,6 @@ actor WhisperContext {
             
             logger.debug("VAD enabled with threshold 0.50")
         } else {
-            vadPathCString = nil
             params.vad = false
             logger.debug("VAD disabled (no model path)")
         }
@@ -185,11 +178,6 @@ actor WhisperContext {
             logger.error("Failed to run whisper_full")
         }
         
-        // Clear C strings
-        languageCString = nil
-        promptCString = nil
-        vadPathCString = nil
-
         if cancellationState.isCancelled {
             throw CancellationError()
         }
@@ -219,9 +207,6 @@ actor WhisperContext {
             whisper_free(context)
             self.context = nil
         }
-        languageCString = nil
-        promptCString = nil
-        vadPathCString = nil
         logger.debug("Whisper context resources released")
     }
     
@@ -259,6 +244,25 @@ actor WhisperContext {
 
 private func cpuCount() -> Int {
     ProcessInfo.processInfo.processorCount
+}
+
+private struct OwnedCString {
+    let pointer: UnsafeMutablePointer<CChar>
+    private let count: Int
+
+    init(_ string: String) {
+        let bytes = Array(string.utf8CString)
+        count = bytes.count
+        pointer = .allocate(capacity: count)
+        bytes.withUnsafeBufferPointer { buffer in
+            pointer.initialize(from: buffer.baseAddress!, count: buffer.count)
+        }
+    }
+
+    func deallocate() {
+        pointer.deinitialize(count: count)
+        pointer.deallocate()
+    }
 }
 
 /// Thread-safe state shared with whisper.cpp's C abort callback.

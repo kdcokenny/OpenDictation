@@ -406,12 +406,6 @@ actor CloudTranscriptionProvider: TranscriptionProvider {
         }
     }
     
-    // MARK: - Text Cleaning
-    
-    static func cleanTranscriptionText(_ text: String) -> String {
-        TranscriptionOutputFilter.filter(text)
-    }
-
 }
 
 // MARK: - Response Models

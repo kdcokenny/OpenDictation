@@ -11,19 +11,16 @@ app_path=$1
 version=$2
 build_number=$3
 info_plist="$app_path/Contents/Info.plist"
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-if ! command -v plutil >/dev/null; then
-  echo "plutil is required to set the app version" >&2
-  exit 1
-fi
-
-if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-  echo "Invalid release version: $version" >&2
-  exit 64
-fi
+"$script_dir/validate-version.sh" "$version"
 if [[ ! $build_number =~ ^[0-9]+$ ]]; then
   echo "Invalid build number: $build_number" >&2
   exit 64
+fi
+if ! command -v plutil >/dev/null; then
+  echo "plutil is required to set the app version" >&2
+  exit 1
 fi
 if [[ ! -f $info_plist ]]; then
   echo "Info.plist is missing from $app_path" >&2

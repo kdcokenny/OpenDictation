@@ -27,7 +27,12 @@ struct CloudTranscriptionConfiguration: Sendable {
     }
 
     var usesLanguageArray: Bool {
-        modelName == "gpt-transcribe" || modelName.hasPrefix("gpt-transcribe-")
+        Self.isGPTTranscribe(modelName)
+    }
+
+    static func isGPTTranscribe(_ model: String) -> Bool {
+        let name = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name == "gpt-transcribe" || name.hasPrefix("gpt-transcribe-")
     }
 
     func endpoint() throws -> URL {

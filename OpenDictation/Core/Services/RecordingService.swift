@@ -75,8 +75,9 @@ final class RecordingService: NSObject, ObservableObject {
         }
 
         if !inputDeviceUID.isEmpty {
-            AudioInputDeviceManager.shared.refresh()
-            guard AudioInputDeviceManager.shared.device(withUID: inputDeviceUID) != nil else {
+            guard AudioInputDeviceManager.shared.isInputDeviceAvailable(
+                withUID: inputDeviceUID
+            ) else {
                 throw RecordingError.inputDeviceUnavailable
             }
         }
