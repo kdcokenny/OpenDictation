@@ -70,6 +70,26 @@ final class TextInsertionTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), originalText)
         XCTAssertEqual(pasteboard.data(forType: .rtf), rtfData)
     }
+
+    func testAutomaticallyRestoresClipboardWithoutUIDismissal() async throws {
+        pasteboard.declareTypes([.string], owner: nil)
+        pasteboard.setString("Original Content", forType: .string)
+        let automaticRestoreSut = TextInsertionService(
+            accessibilityChecker: MockAccessibilityChecker(isGranted: true),
+            pasteSimulator: { true },
+            clipboardRestoreDelay: .milliseconds(10)
+        )
+
+        XCTAssertEqual(automaticRestoreSut.insertText("Dictated Text"), .inserted)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Dictated Text")
+
+        let didRestore = try await waitForPasteboardString(
+            "Original Content",
+            timeout: 1
+        )
+
+        XCTAssertTrue(didRestore, "Clipboard restoration did not finish before the timeout")
+    }
     
     // MARK: - Fallback Logic
     
@@ -105,7 +125,7 @@ final class TextInsertionTests: XCTestCase {
     
     // MARK: - Verification Logic
     
-    func testRestoresOnVerificationFailure() {
+    func testDoesNotRestoreWhenClipboardChanges() {
         // This is hard to test without mocking the pasteboard, 
         // but we can verify the logic of restoreClipboard() 
         // doesn't restore if the clipboard was changed by user.
@@ -125,6 +145,73 @@ final class TextInsertionTests: XCTestCase {
         
         // Then - Should NOT restore original text because clipboard was modified
         XCTAssertEqual(pasteboard.string(forType: .string), "User Copied")
+    }
+
+    func testDoesNotRestoreAfterUserCopiesIdenticalText() {
+        pasteboard.declareTypes([.string], owner: nil)
+        pasteboard.setString("Original Content", forType: .string)
+
+        XCTAssertEqual(sut.insertText("Dictated Text"), .inserted)
+
+        pasteboard.clearContents()
+        pasteboard.setString("Dictated Text", forType: .string)
+        sut.restoreClipboard()
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "Dictated Text")
+    }
+
+    func testPreservesClipboardWrittenDuringPasteSimulation() {
+        let pasteboard = pasteboard
+        pasteboard.clearContents()
+        pasteboard.setString("Original Content", forType: .string)
+        let service = TextInsertionService(
+            accessibilityChecker: MockAccessibilityChecker(isGranted: true),
+            pasteSimulator: {
+                pasteboard.clearContents()
+                pasteboard.setString("Dictated Text", forType: .string)
+                return true
+            }
+        )
+
+        XCTAssertEqual(service.insertText("Dictated Text"), .inserted)
+        service.restoreClipboard()
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "Dictated Text")
+    }
+
+    func testFailedPasteDoesNotOverwriteANewerClipboardWrite() {
+        let pasteboard = pasteboard
+        pasteboard.clearContents()
+        pasteboard.setString("Original Content", forType: .string)
+        let service = TextInsertionService(
+            accessibilityChecker: MockAccessibilityChecker(isGranted: true),
+            pasteSimulator: {
+                pasteboard.clearContents()
+                pasteboard.setString("User Copied", forType: .string)
+                return false
+            }
+        )
+
+        XCTAssertEqual(service.insertText("Dictated Text"), .failed("Failed to simulate paste."))
+        service.restoreClipboard()
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "User Copied")
+    }
+
+    private func waitForPasteboardString(
+        _ expected: String,
+        timeout: TimeInterval
+    ) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            if pasteboard.string(forType: .string) == expected {
+                return true
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        return pasteboard.string(forType: .string) == expected
     }
 
     private func savePasteboardContents(

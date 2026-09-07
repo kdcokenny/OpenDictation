@@ -1,108 +1,65 @@
 # Contributing to Open Dictation
 
-Thanks for your interest in contributing! This guide covers the development setup and contribution process.
+Open Dictation requires macOS 14 or later, Xcode 26 or later, and an Apple Silicon Mac. Install the development tools with Homebrew:
 
-## Build Environment
+```bash
+brew install xcodegen swiftlint
+```
 
-- **macOS 14** (Sonoma) or later
-- **Xcode 15+** (latest stable recommended)
-- **Apple Silicon Mac** (M1 or later)
-
-## Getting Started
-
-### 1. Clone and Setup
+## Set up a checkout
 
 ```bash
 git clone https://github.com/kdcokenny/OpenDictation.git
 cd OpenDictation
-make setup  # Downloads models and builds whisper.cpp
+make setup
 ```
 
-### 2. Build and Run
+`make setup` downloads the pinned whisper.cpp XCFramework, verifies every downloaded binary, downloads the bundled Whisper models when needed, and regenerates `OpenDictation.xcodeproj` from `project.yml`. The generated project is intentionally ignored by Git. Run `make setup` again after changing `project.yml`.
+
+The pinned binary versions, immutable model revisions, and SHA-256 hashes live in `scripts/dependencies.env`.
+
+## Build and test
 
 ```bash
-make build  # Build debug version
-make run    # Run the app
+make build
+make test
+make lint
 ```
 
-See `make help` for all available targets.
+`make ci` runs SwiftLint, the macOS unit tests, and a clean Release build. It also checks that the built app contains the whisper.cpp framework and the two bundled models. Run it before opening a pull request.
 
-## Development with Non-Xcode Editors
+Use `make run` to open the development app. `make help` lists the other targets.
 
-If you use VSCode, Cursor, Zed, Neovim, or other editors with sourcekit-lsp, you'll need additional setup for code completion and navigation to work.
+## SourceKit-LSP editors
 
-### Setup
+For VS Code, Cursor, Zed, Neovim, or another SourceKit-LSP editor, install `xcode-build-server` and generate its project configuration:
 
 ```bash
 brew install xcode-build-server
-make lsp  # Generate buildServer.json
+make lsp
 ```
 
-Then **build once in Xcode GUI** (required for sourcekit-lsp to resolve symbols):
+Run `make build` once to populate the index, then restart the editor. Repeat those steps if project generation or a large source change leaves stale symbols.
 
-1. Open `OpenDictation.xcodeproj` in Xcode
-2. Press **Cmd+B** to build
-3. Close Xcode
-4. Restart your editor
+## Code style
 
-### Troubleshooting
+Follow the [Swift API Design Guidelines](https://swift.org/documentation/api-design-guidelines/). This project uses two-space indentation and a 100-character line width. Prefer guard clauses for invalid input and use `is` or `has` prefixes for Boolean properties.
 
-If symbols stop resolving after significant code changes, rebuild in Xcode GUI (Cmd+B).
+SwiftLint runs during Xcode builds when it is installed. CI also runs `swiftlint --strict` directly. `make lint-fix` applies SwiftLint's safe automatic corrections, then runs the strict check again.
 
-## Code Style
+## Pull requests
 
-We use [SwiftLint](https://github.com/realm/SwiftLint) for code style enforcement.
+Create a focused feature or fix branch, include tests for changed behavior, and run `make ci`. Use conventional commit prefixes such as `feat:`, `fix:`, `refactor:`, `docs:`, and `test:`.
 
-```bash
-brew install swiftlint
-make lint      # Check for violations
-make lint-fix  # Auto-fix where possible
-```
+Open pull requests against `main`. Describe the user-visible behavior and list the checks you ran.
 
-SwiftLint runs automatically during Xcode builds. All violations must be resolved before merging.
+## Project layout
 
-### Style Guidelines
-
-- Follow [Swift API Design Guidelines](https://swift.org/documentation/api-design-guidelines/)
-- 2-space indentation, 100 character line width
-- Use `///` doc comments
-- Name booleans with `is`/`has` prefix (e.g., `isRecording`)
-- Prefer guard clauses for early returns
-
-## Pull Requests
-
-1. Fork the repository
-2. Create a feature branch (`feat/my-feature` or `fix/my-bug`)
-3. Make your changes
-4. Ensure `make lint` passes
-5. Ensure `make build` succeeds
-6. Submit a pull request against `main`
-
-### Commit Messages
-
-Use [conventional commits](https://www.conventionalcommits.org/):
-
-- `feat:` new features
-- `fix:` bug fixes
-- `refactor:` code changes that neither fix bugs nor add features
-- `docs:` documentation only
-- `test:` adding/updating tests
-
-## Project Structure
-
-```
+```text
 OpenDictation/
-├── App/              # App lifecycle (AppDelegate, main entry)
-├── Core/
-│   ├── Services/     # Business logic services
-│   ├── Utilities/    # Helpers and extensions
-│   └── Whisper/      # Whisper.cpp integration
-├── Models/           # Data models
-├── Resources/        # Assets, sounds, bundled models
-└── Views/            # SwiftUI views
+├── App/              App lifecycle and configuration
+├── Core/             Services, context, utilities, and speech engines
+├── Models/           App data models
+├── Resources/        Assets, sounds, DMG artwork, and bundled models
+└── Views/            SwiftUI and AppKit views
 ```
-
-## Need Help?
-
-- Check existing [issues](https://github.com/kdcokenny/OpenDictation/issues)
-- Open a new issue for bugs or feature requests

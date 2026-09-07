@@ -112,6 +112,74 @@ final class CloudTranscriptionProviderTests: XCTestCase {
         }
     }
 
+    func testGPTTranscribeUsesLanguageArrayAndPreservesTechnicalText() async throws {
+        let configuration = CloudTranscriptionConfiguration(
+            baseURL: "https://api.openai.com/v1", model: "gpt-transcribe",
+            language: "en", temperature: 0
+        )
+        let sut = CloudTranscriptionProvider(
+            apiKeyProvider: Self.testAPIKey,
+            configurationProvider: { configuration }
+        ) { request, body in
+            XCTAssertEqual(request.url?.path, "/v1/audio/transcriptions")
+            let multipart = String(decoding: body, as: UTF8.self)
+            XCTAssertTrue(multipart.contains("name=\"languages[]\"\r\n\r\nen"))
+            XCTAssertFalse(multipart.contains("name=\"language\""))
+            XCTAssertFalse(multipart.contains("name=\"temperature\""))
+            return try Self.successResponse(text: "Call foo(bar) with items[0].")
+        }
+
+        let text = try await sut.transcribe(audioURL: audioURL, context: .code)
+        XCTAssertEqual(text, "Call foo(bar) with items[0].")
+    }
+
+    func testAutomaticLanguageDoesNotSendLiteralAutoToLegacyAPI() async throws {
+        let configuration = CloudTranscriptionConfiguration(
+            baseURL: "https://api.groq.com/openai/v1", model: "whisper-large-v3-turbo",
+            language: "auto", temperature: 0
+        )
+        let sut = CloudTranscriptionProvider(
+            apiKeyProvider: Self.testAPIKey,
+            configurationProvider: { configuration }
+        ) { _, body in
+            let multipart = String(decoding: body, as: UTF8.self)
+            XCTAssertFalse(multipart.contains("name=\"language\""))
+            XCTAssertFalse(multipart.contains("name=\"languages[]\""))
+            return try Self.successResponse(text: "Hello")
+        }
+        _ = try await sut.transcribe(audioURL: audioURL, context: .prose)
+    }
+
+    func testAzureEndpointRetainsItsQuery() throws {
+        let configuration = CloudTranscriptionConfiguration(
+            baseURL: "https://example.openai.azure.com/openai/deployments/speech/audio/transcriptions?api-version=2024-02-01",
+            model: "whisper-1", language: "", temperature: 0
+        )
+        let endpoint = try configuration.endpoint()
+        XCTAssertEqual(endpoint.path, "/openai/deployments/speech/audio/transcriptions")
+        XCTAssertEqual(endpoint.query, "api-version=2024-02-01")
+    }
+
+    func testInvalidEndpointFailsBeforeUploadingAudio() async throws {
+        let configuration = CloudTranscriptionConfiguration(
+            baseURL: "file:///tmp/transcriptions", model: "whisper-1",
+            language: "", temperature: 0
+        )
+        let sut = CloudTranscriptionProvider(
+            apiKeyProvider: Self.testAPIKey,
+            configurationProvider: { configuration }
+        ) { _, _ in
+            XCTFail("Invalid endpoint must not upload audio")
+            return try Self.successResponse(text: "Unexpected")
+        }
+        do {
+            _ = try await sut.transcribe(audioURL: audioURL, context: .prose)
+            XCTFail("Expected invalidURL")
+        } catch TranscriptionError.invalidURL {
+            // Expected validation error.
+        }
+    }
+
     private static func successResponse(text: String) throws -> (Data, URLResponse) {
         try response(statusCode: 200, body: #"{"text":"\#(text)"}"#)
     }

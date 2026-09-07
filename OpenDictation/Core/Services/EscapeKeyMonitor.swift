@@ -53,7 +53,7 @@ final class EscapeKeyMonitor {
             options: .defaultTap,
             eventsOfInterest: eventMask,
             callback: Self.eventTapCallback,
-            userInfo: UnsafeMutableRawPointer(Unmanaged.passRetained(self).toOpaque())
+            userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
         ) else {
             logger.error("Failed to create CGEvent tap - missing Accessibility permissions?")
             return
@@ -97,6 +97,15 @@ final class EscapeKeyMonitor {
         
         // Get our monitor instance back from the opaque pointer
         let monitor = Unmanaged<EscapeKeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
+
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            DispatchQueue.main.async {
+                guard let tap = monitor.eventTap else { return }
+                CGEvent.tapEnable(tap: tap, enable: true)
+                monitor.logger.warning("Escape key event tap was disabled and has been re-enabled")
+            }
+            return Unmanaged.passUnretained(cgEvent)
+        }
         
         // Only handle keyDown events
         guard type == .keyDown else {

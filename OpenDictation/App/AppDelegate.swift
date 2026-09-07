@@ -38,8 +38,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var activeHistoryEntryID: UUID?
     private var currentHistoryEntryID: UUID?
     
-    /// Active transcription task (for cancellation support)
-    private var transcriptionTask: Task<Void, Never>?
+    /// The session that currently owns the microphone recorder.
+    private var recordingSessionID: UUID?
+
+    /// Tasks and files remain keyed by session until their own cleanup finishes.
+    /// This prevents an older task from deleting a newer recording.
+    private var transcriptionTasks: [UUID: Task<Void, Never>] = [:]
+    private var transcriptionAudioURLs: [UUID: URL] = [:]
+    private var heldHotkeySessionID: UUID?
     
     /// App activation observer token (for cleanup)
     private var appActivationObserver: NSObjectProtocol?
@@ -53,8 +59,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         
         // MARK: - Accessibility Permission Check
-        // Check accessibility FIRST - before any other setup.
-        // This prevents the escape key bug by ensuring event taps can be created.
+        // Begin the accessibility check before setup. The escape monitor subscribes
+        // to permission changes and starts as soon as the event tap can be created.
         permissionsManager = PermissionsManager()
         permissionsManager?.checkAccessibilityOnLaunch()
         
@@ -84,6 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     func applicationWillTerminate(_ notification: Notification) {
+        cleanupAllSessionWork()
+
         // Remove observers
         NotificationCenter.default.removeObserver(
             self,
@@ -99,8 +107,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         // Restore volume if still ducked (safety net)
         audioFeedbackService?.restoreVolume()
+        textInsertionService?.restoreClipboard()
         dictationHistoryService?.cleanupRetainedAudio()
-        notchPanel?.hide()
+        notchPanel?.destroy()
+        notchPanel = nil
+        EscapeKeyMonitor.shared.stop()
+        EscapeKeyMonitor.shared.onEscapePressed = nil
+        EscapeKeyMonitor.shared.shouldHandleEscape = nil
     }
     
     // MARK: - Setup
@@ -223,8 +236,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return self?.stateMachine?.state != .idle
         }
         
-        // Start monitoring (lives for app lifetime)
-        monitor.start()
+        permissionsManager?.accessibilityDidUpdate
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak monitor] in
+                guard let self, let monitor else { return }
+
+                if self.permissionsManager?.isAccessibilityGranted == true {
+                    monitor.start()
+                } else {
+                    monitor.stop()
+                }
+            }
+            .store(in: &cancellables)
+
+        if permissionsManager?.isAccessibilityGranted == true {
+            monitor.start()
+        }
     }
     
     /// Sets up local transcription on first launch.
@@ -251,8 +278,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.logger.warning("Transcription mode issue: \(error)")
             }
             
-            // Check if auto-upgrade is needed (downloads better model if on Wi-Fi)
-            await ModelManager.shared.checkAndUpgradeIfNeeded()
+            // Preserve Whisper's existing upgrade policy only when Whisper is selected.
+            let engine = UserDefaults.standard.string(forKey: "localSpeechEngine") ?? "whisper"
+            if TranscriptionCoordinator.shared.currentMode == .local && engine == LocalSpeechEngine.whisper.rawValue {
+                await ModelManager.shared.checkAndUpgradeIfNeeded()
+            }
+            await TranscriptionCoordinator.shared.prewarmSelectedLocalModel()
         }
     }
     
@@ -281,7 +312,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Task { @MainActor [weak self] in
                 guard let self = self,
                       let sm = self.stateMachine,
-                      sm.state == .recording else { return }
+                      sm.state == .recording,
+                      !sm.isStopRequested else { return }
 
                 // Update state machine (source of truth)
                 let context = ContextDetector.detect()
@@ -293,7 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         
         // Wire up state machine callbacks
-        sm.onShowPanel = { [weak self] in
+        sm.onShowPanel = { [weak self, weak sm] sessionID in
             guard let self = self else { return }
             
             // Defensive rebuild if panel is missing or unhealthy (volumeHUD pattern)
@@ -320,8 +352,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Duck other audio first, then play start sound
             // AudioDeviceDuck only affects OTHER audio, our sounds play at full volume
             self.audioFeedbackService?.duckVolume()
-            DispatchQueue.main.asyncAfter(deadline: .now() + Timing.volumeDuckRampDelay) {
-                self.audioFeedbackService?.playStartSound()
+            DispatchQueue.main.asyncAfter(deadline: .now() + Timing.volumeDuckRampDelay) { [weak self, weak sm] in
+                guard sm?.activeSessionID == sessionID,
+                      sm?.state == .recording else { return }
+                self?.audioFeedbackService?.playStartSound()
             }
             
             // Show panel if available (non-notch Macs get audio feedback only)
@@ -337,7 +371,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             
             // Only hide panel if it exists (non-notch Macs skip this)
             guard let panel = self.notchPanel else {
-                // No panel - just trigger dismiss completed callback
                 sm.send(.dismissCompleted)
                 return
             }
@@ -369,60 +402,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return result
         }
         
-        sm.onCancel = { [weak self] in
-            // Cancel any in-progress transcription
-            self?.transcriptionTask?.cancel()
-            self?.transcriptionTask = nil
-            self?.discardCurrentHistoryEntry()
-            
-            // Stop recording if active
-            self?.recordingService?.stopRecording()
-            self?.recordingService?.deleteRecording()
-            
-            self?.notchPanel?.hide()
+        sm.onCancel = { [weak self] sessionID in
+            self?.cancelSessionWork(sessionID: sessionID)
         }
         
         // MARK: Recording callbacks
         
-        sm.onStartRecording = { [weak self] in
-            guard let self = self else { return }
-            
-            // Check microphone permission first (deferred until user actually tries to record)
-            guard let pm = self.permissionsManager else { return }
-            
-            if pm.isMicrophoneGranted {
-                // Already granted - start recording immediately
-                self.startRecordingInternal()
-            } else {
-                // Request permission (will show system prompt if first time)
-                pm.requestMicrophoneIfNeeded { [weak self] granted in
-                    guard let self = self else { return }
-                    
-                    if granted {
-                        // Brief delay after permission grant to let audio subsystem fully initialize
-                        // Pattern used by Loop, MacWhisper, and other audio apps
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                            self?.startRecordingInternal()
-                        }
-                    } else {
-                        self.logger.warning("Microphone permission denied")
-                        self.stateMachine?.send(.transcriptionFailed(error: "Microphone access required. Please enable in System Settings."))
-                    }
+        sm.onStartRecording = { [weak self, weak sm] sessionID in
+            Task { @MainActor [weak self, weak sm] in
+                guard let sm,
+                      sm.activeSessionID == sessionID,
+                      sm.state == .recording,
+                      !sm.isStopRequested else { return }
+
+                let validationError = await TranscriptionCoordinator.shared.validateCurrentMode()
+
+                guard let self,
+                      sm.activeSessionID == sessionID,
+                      sm.state == .recording,
+                      !sm.isStopRequested else { return }
+
+                if let validationError {
+                    self.logger.warning("Cannot start dictation: \(validationError)")
+                    sm.send(.transcriptionFailed(sessionID: sessionID, error: validationError))
+                    return
                 }
+
+                self.requestMicrophoneAndStartRecording(
+                    sessionID: sessionID,
+                    stateMachine: sm
+                )
             }
         }
-        
-        sm.onStopRecording = { [weak self, weak sm] in
-            guard let self = self else { return }
+
+        sm.onStopRecording = { [weak self, weak sm] sessionID in
+            guard let self, let sm else { return }
+
+            guard self.recordingSessionID == sessionID else {
+                self.logger.debug("Ignoring stop for a session that does not own the recorder")
+                return
+            }
+
+            self.recordingSessionID = nil
             
             // Stop recording and get audio URL
             guard let audioURL = self.recordingService?.stopRecording() else {
                 self.logger.warning("No recording available")
-                sm?.send(.transcriptionFailed(error: "No recording available"))
+                sm.send(.transcriptionFailed(sessionID: sessionID, error: "No recording available"))
                 return
             }
             
-            let context = sm?.currentContext ?? .prose
+            let context = sm.currentContext
             let historyEntryID = self.dictationHistoryService?.createEntry(
                 audioURL: audioURL,
                 context: context
@@ -434,16 +464,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Notify that transcription has started (shows processing state)
             // Brief delay to allow UI to update
             DispatchQueue.main.asyncAfter(deadline: .now() + Timing.transcriptionStartedDelay) {
-                sm?.send(.transcriptionStarted)
+                sm.send(.transcriptionStarted(sessionID: sessionID))
             }
             
             // Start transcription task
             // Capture state machine reference before entering Task for Swift 6 concurrency safety
+            self.transcriptionAudioURLs[sessionID] = audioURL
             let stateMachine = sm
-            self.transcriptionTask = Task { [weak self] in
+            self.transcriptionTasks[sessionID] = Task { [weak self] in
                 defer {
-                    // Clean up recording file after transcription
-                    self?.recordingService?.deleteRecording()
+                    self?.finishTranscriptionWork(sessionID: sessionID, audioURL: audioURL)
                 }
                 
                 do {
@@ -454,6 +484,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     guard !Task.isCancelled else { return }
                     
                     await MainActor.run {
+                        guard stateMachine.activeSessionID == sessionID else { return }
+
                         if let historyEntryID {
                             self?.dictationHistoryService?.markTranscriptionSucceeded(
                                 id: historyEntryID,
@@ -462,7 +494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             self?.currentHistoryEntryID = nil
                             self?.activeHistoryEntryID = historyEntryID
                         }
-                        stateMachine?.send(.transcriptionCompleted(text: text))
+                        stateMachine.send(.transcriptionCompleted(sessionID: sessionID, text: text))
                         self?.activeHistoryEntryID = nil
                     }
                 } catch {
@@ -471,6 +503,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     
                     self?.logger.error("Transcription failed: \(error.localizedDescription)")
                     await MainActor.run {
+                        guard stateMachine.activeSessionID == sessionID else { return }
+
                         if let historyEntryID {
                             self?.dictationHistoryService?.markTranscriptionFailed(
                                 id: historyEntryID,
@@ -478,36 +512,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             )
                             self?.currentHistoryEntryID = nil
                         }
-                        stateMachine?.send(.transcriptionFailed(error: error.localizedDescription))
+                        stateMachine.send(.transcriptionFailed(
+                            sessionID: sessionID,
+                            error: error.localizedDescription
+                        ))
                     }
                 }
             }
+        }
+
+        recordingService?.onRecordingError = { [weak self, weak sm] error, audioURL in
+            guard let self,
+                  let sm,
+                  let sessionID = sm.activeSessionID,
+                  self.recordingSessionID == sessionID else { return }
+
+            self.recordingSessionID = nil
+            if let audioURL {
+                self.recordingService?.deleteRecording(at: audioURL)
+            }
+            sm.send(.transcriptionFailed(sessionID: sessionID, error: error.localizedDescription))
         }
         
         // Observe state changes to update panel visual state
         sm.$state
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
+            .sink { [weak self, weak sm] state in
+                guard let self, let sm else { return }
+                let sessionID = sm.activeSessionID
+
                 switch state {
                 case .recording:
-                    self?.notchPanel?.setVisualState(.recording)
+                    self.notchPanel?.setVisualState(.recording)
                 case .processing:
-                    self?.notchPanel?.setVisualState(.processing)
+                    self.notchPanel?.setVisualState(.processing)
                 case .success:
-                    self?.playFeedbackAndRestoreVolume { $0.playSuccessSound() }
-                    self?.notchPanel?.setVisualState(.success)
+                    self.playFeedbackAndRestoreVolume(sessionID: sessionID, stateMachine: sm) {
+                        $0.playSuccessSound()
+                    }
+                    self.notchPanel?.setVisualState(.success)
                 case .copiedToClipboard:
-                    self?.playFeedbackAndRestoreVolume { $0.playSuccessSound() }
-                    self?.notchPanel?.setVisualState(.copiedToClipboard)
+                    self.playFeedbackAndRestoreVolume(sessionID: sessionID, stateMachine: sm) {
+                        $0.playSuccessSound()
+                    }
+                    self.notchPanel?.setVisualState(.copiedToClipboard)
                 case .error:
-                    self?.playFeedbackAndRestoreVolume { $0.playErrorSound() }
-                    self?.notchPanel?.setVisualState(.error)
+                    self.playFeedbackAndRestoreVolume(sessionID: sessionID, stateMachine: sm) {
+                        $0.playErrorSound()
+                    }
+                    self.notchPanel?.setVisualState(.error)
                 case .empty:
-                    self?.playFeedbackAndRestoreVolume { $0.playEmptySound() }
-                    self?.notchPanel?.setVisualState(.empty)
+                    self.playFeedbackAndRestoreVolume(sessionID: sessionID, stateMachine: sm) {
+                        $0.playEmptySound()
+                    }
+                    self.notchPanel?.setVisualState(.empty)
                 case .cancelled:
                     // No sound for cancel, just restore
-                    self?.audioFeedbackService?.restoreVolume()
+                    self.audioFeedbackService?.restoreVolume()
                 default:
                     break
                 }
@@ -515,23 +576,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .store(in: &cancellables)
         
         // Wire up hotkey service
-        hotkeyService?.onHotkeyPressed = { [weak sm] in
-            guard let sm = sm else { return }
-            
-            // Capture context NOW (at boundary) - runs on MainActor
-            let context = ContextDetector.detect()
-            
-            // Toggle behavior: if recording, stop; otherwise start
-            if sm.state == .recording {
-                sm.send(.hotkeyPressed(context: context))  // This stops recording
-            } else if sm.state == .idle {
-                sm.send(.hotkeyPressed(context: context))  // This starts recording
-            }
-            // Ignore hotkey in other states (processing, success, etc.)
+        hotkeyService?.onHotkeyPressed = { [weak self, weak sm] in
+            guard let self, let sm else { return }
+            self.handleHotkeyPressed(stateMachine: sm)
+        }
+
+        hotkeyService?.onHotkeyReleased = { [weak self, weak sm] in
+            guard let self, let sm else { return }
+            self.handleHotkeyReleased(stateMachine: sm)
         }
         
         // Start listening for hotkey
         hotkeyService?.start()
+    }
+
+    private func handleHotkeyPressed(stateMachine: DictationStateMachine) {
+        guard let hotkeyService else { return }
+
+        switch hotkeyService.activationMode {
+        case .toggle:
+            heldHotkeySessionID = nil
+            handleToggleHotkey(stateMachine: stateMachine)
+
+        case .hold:
+            guard stateMachine.state == .idle else { return }
+
+            stateMachine.send(.hotkeyPressed(context: ContextDetector.detect()))
+            heldHotkeySessionID = stateMachine.activeSessionID
+        }
+    }
+
+    private func handleHotkeyReleased(stateMachine: DictationStateMachine) {
+        guard hotkeyService?.activationMode == .hold,
+              let sessionID = heldHotkeySessionID else { return }
+
+        heldHotkeySessionID = nil
+        guard stateMachine.activeSessionID == sessionID,
+              stateMachine.state == .recording,
+              !stateMachine.isStopRequested else { return }
+
+        stopOrCancelRecording(stateMachine: stateMachine, sessionID: sessionID)
+    }
+
+    private func handleToggleHotkey(stateMachine: DictationStateMachine) {
+        switch stateMachine.state {
+        case .idle:
+            stateMachine.send(.hotkeyPressed(context: ContextDetector.detect()))
+
+        case .recording:
+            guard let sessionID = stateMachine.activeSessionID,
+                  !stateMachine.isStopRequested else { return }
+            stopOrCancelRecording(stateMachine: stateMachine, sessionID: sessionID)
+
+        default:
+            break
+        }
+    }
+
+    private func stopOrCancelRecording(
+        stateMachine: DictationStateMachine,
+        sessionID: UUID
+    ) {
+        guard recordingSessionID == sessionID else {
+            // The key was released while microphone permission or startup was pending.
+            stateMachine.send(.escapePressed)
+            return
+        }
+
+        stateMachine.send(.hotkeyPressed(context: ContextDetector.detect()))
     }
     
     // MARK: - Debug Test Methods
@@ -547,16 +659,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         print("[Test] Error: recording → processing → error (mock mode)")
         sm.send(.hotkeyPressed(context: .prose))  // → .recording (no real recording)
+        guard let sessionID = sm.activeSessionID else { return }
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak sm] in
-            sm?.send(.stopRecording)
+            sm?.send(.stopRecording(context: .prose))
             
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak sm] in
-                sm?.send(.transcriptionStarted)  // → .processing
+                sm?.send(.transcriptionStarted(sessionID: sessionID))  // → .processing
             }
             
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak sm] in
-                sm?.send(.transcriptionFailed(error: "Network connection failed"))  // → .error
+                sm?.send(.transcriptionFailed(
+                    sessionID: sessionID,
+                    error: "Network connection failed"
+                ))  // → .error
                 // Mock mode auto-disables when state returns to .idle
             }
         }
@@ -573,8 +689,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let sm = stateMachine else { return }
         
         notchPanel?.onDismissCompleted = { [weak sm, weak self] in
-            // Restore clipboard now that UI has fully dismissed
-            // This gives the target app ~650ms+ to process the paste
+            // Restore after the target app has had the dismissal animation to
+            // consume its paste event. TextInsertionService also has a timer fallback.
             self?.textInsertionService?.restoreClipboard()
             
             sm?.send(.dismissCompleted)
@@ -594,15 +710,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // 1. Handle active sessions (display change interrupts recording/processing)
         if stateMachine?.state != .idle {
             logger.info("Screen change interrupted active session - performing emergency cleanup")
-            
-            // Cancel any in-progress transcription
-            transcriptionTask?.cancel()
-            transcriptionTask = nil
-            discardCurrentHistoryEntry()
-            
-            // Stop recording if active
-            recordingService?.stopRecording()
-            recordingService?.deleteRecording()
+
+            if let sessionID = stateMachine?.activeSessionID {
+                cancelSessionWork(sessionID: sessionID)
+            }
+            textInsertionService?.restoreClipboard()
             
             // Restore audio volume
             audioFeedbackService?.restoreVolume()
@@ -634,28 +746,141 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     // MARK: - Recording Helpers
+
+    private func requestMicrophoneAndStartRecording(
+        sessionID: UUID,
+        stateMachine: DictationStateMachine
+    ) {
+        guard stateMachine.activeSessionID == sessionID,
+              stateMachine.state == .recording,
+              !stateMachine.isStopRequested else { return }
+
+        guard let permissionsManager else {
+            stateMachine.send(.transcriptionFailed(
+                sessionID: sessionID,
+                error: "Permission service unavailable."
+            ))
+            return
+        }
+
+        if permissionsManager.isMicrophoneGranted {
+            startRecordingInternal(sessionID: sessionID)
+            return
+        }
+
+        permissionsManager.requestMicrophoneIfNeeded { [weak self, weak stateMachine] granted in
+            guard let self,
+                  let stateMachine,
+                  stateMachine.activeSessionID == sessionID,
+                  stateMachine.state == .recording,
+                  !stateMachine.isStopRequested else { return }
+
+            guard granted else {
+                self.logger.warning("Microphone permission denied")
+                stateMachine.send(.transcriptionFailed(
+                    sessionID: sessionID,
+                    error: "Microphone access required. Please enable in System Settings."
+                ))
+                return
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak stateMachine] in
+                guard let stateMachine,
+                      stateMachine.activeSessionID == sessionID,
+                      stateMachine.state == .recording,
+                      !stateMachine.isStopRequested else { return }
+                self?.startRecordingInternal(sessionID: sessionID)
+            }
+        }
+    }
     
     /// Actually starts recording (called after permission is confirmed).
-    private func startRecordingInternal() {
+    private func startRecordingInternal(sessionID: UUID) {
+        guard stateMachine?.activeSessionID == sessionID,
+              stateMachine?.state == .recording,
+              stateMachine?.isStopRequested == false else { return }
+
+        guard let recordingService else {
+            stateMachine?.send(.transcriptionFailed(
+                sessionID: sessionID,
+                error: "Recording service unavailable."
+            ))
+            return
+        }
+
         do {
-            try recordingService?.startRecording()
+            try recordingService.startRecording()
+            recordingSessionID = sessionID
             logger.debug("Recording started")
         } catch {
             logger.error("Failed to start recording: \(error.localizedDescription)")
-            // Trigger error state
-            DispatchQueue.main.async { [weak self] in
-                self?.stateMachine?.send(.transcriptionFailed(error: error.localizedDescription))
-            }
+            stateMachine?.send(.transcriptionFailed(
+                sessionID: sessionID,
+                error: error.localizedDescription
+            ))
         }
+    }
+
+    private func cancelSessionWork(sessionID: UUID) {
+        transcriptionTasks[sessionID]?.cancel()
+        heldHotkeySessionID = nil
+        discardCurrentHistoryEntry()
+
+        guard recordingSessionID == sessionID else { return }
+
+        recordingSessionID = nil
+        if let audioURL = recordingService?.stopRecording() {
+            recordingService?.deleteRecording(at: audioURL)
+        }
+    }
+
+    private func finishTranscriptionWork(sessionID: UUID, audioURL: URL) {
+        recordingService?.deleteRecording(at: audioURL)
+        transcriptionAudioURLs[sessionID] = nil
+        transcriptionTasks[sessionID] = nil
+    }
+
+    private func cleanupAllSessionWork() {
+        recordingService?.onRecordingError = nil
+        hotkeyService?.onHotkeyPressed = nil
+        hotkeyService?.onHotkeyReleased = nil
+
+        for task in transcriptionTasks.values {
+            task.cancel()
+        }
+
+        if let audioURL = recordingService?.stopRecording() {
+            recordingService?.deleteRecording(at: audioURL)
+        }
+
+        for audioURL in transcriptionAudioURLs.values {
+            recordingService?.deleteRecording(at: audioURL)
+        }
+
+        recordingSessionID = nil
+        heldHotkeySessionID = nil
+        transcriptionTasks.removeAll()
+        transcriptionAudioURLs.removeAll()
+        discardCurrentHistoryEntry()
+        stateMachine?.send(.forceReset)
     }
     
     // MARK: - Audio Feedback Helpers
     
     /// Plays a feedback sound and restores volume after a delay.
-    private func playFeedbackAndRestoreVolume(_ playSound: (AudioFeedbackService) -> Void) {
+    private func playFeedbackAndRestoreVolume(
+        sessionID: UUID?,
+        stateMachine: DictationStateMachine,
+        _ playSound: (AudioFeedbackService) -> Void
+    ) {
         guard let service = audioFeedbackService else { return }
         playSound(service)
-        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.volumeRestoreDelay) { [weak self] in
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.volumeRestoreDelay) { [weak self, weak stateMachine] in
+            if let activeSessionID = stateMachine?.activeSessionID,
+               activeSessionID != sessionID {
+                return
+            }
             self?.audioFeedbackService?.restoreVolume()
         }
     }
@@ -693,7 +918,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Open Dictation Settings"
         window.styleMask = [.titled, .closable]
-        window.setContentSize(NSSize(width: 420, height: 400))
+        window.setContentSize(SettingsView.windowSize)
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self  // To detect when window closes

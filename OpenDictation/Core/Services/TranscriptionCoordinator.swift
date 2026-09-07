@@ -1,84 +1,218 @@
 import Foundation
 import os.log
 
-/// Coordinates transcription between local and cloud providers.
-/// Selects the appropriate provider based on user settings.
+/// Owns engine selection and the shared output pipeline for every dictation and retry.
 actor TranscriptionCoordinator {
-    
-    // MARK: - Singleton
-    
-    static let shared = TranscriptionCoordinator()
-    
-    // MARK: - Properties
-    
-    private let logger = Logger.app(category: "TranscriptionCoordinator")
-    
-    /// The local transcription provider
-    private let localProvider = LocalTranscriptionProvider.shared
-    
-    /// The cloud transcription provider
-    private let cloudProvider = CloudTranscriptionProvider.shared
-    
-    private init() {}
-    
-    // MARK: - Mode Access
-    
-    /// Returns the current transcription mode from UserDefaults.
-    /// UserDefaults is thread-safe, so this computed property is safe to call from any context.
-    nonisolated var currentMode: TranscriptionMode {
-        let rawValue = UserDefaults.standard.string(forKey: "transcriptionMode") ?? TranscriptionMode.local.rawValue
-        return TranscriptionMode(rawValue: rawValue) ?? .local
+    private struct TranscriptionWaiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
     }
-    
-    /// Sets the transcription mode.
+
+    static let shared = TranscriptionCoordinator()
+
+    private let logger = Logger.app(category: "TranscriptionCoordinator")
+    private var isTranscribing = false
+    private var transcriptionWaiters: [TranscriptionWaiter] = []
+    private var prewarmTask: Task<Void, Never>?
+    private var needsPrewarm = false
+
+    nonisolated var currentMode: TranscriptionMode {
+        let value = UserDefaults.standard.string(forKey: "transcriptionMode") ?? TranscriptionMode.local.rawValue
+        return TranscriptionMode(rawValue: value) ?? .local
+    }
+
     nonisolated func setMode(_ mode: TranscriptionMode) {
         UserDefaults.standard.set(mode.rawValue, forKey: "transcriptionMode")
     }
-    
-    // MARK: - Transcription
-    
-    /// Transcribes audio using the current mode's provider.
-    /// - Parameters:
-    ///   - audioURL: URL to the audio file
-    ///   - context: The pre-captured context profile
-    /// - Returns: The transcribed text
+
+    private func selectedLocalEngine() throws -> LocalSpeechEngine {
+        let value = UserDefaults.standard.string(forKey: "localSpeechEngine") ?? LocalSpeechEngine.whisper.rawValue
+        guard let engine = LocalSpeechEngine(rawValue: value) else {
+            throw TranscriptionError.invalidConfiguration("Choose a supported speech engine in Settings.")
+        }
+        return engine
+    }
+
     func transcribe(audioURL: URL, context: ContextProfile) async throws -> String {
-        let mode = currentMode
-        logger.info("Transcribing with \(mode.rawValue) mode, context: \(String(describing: context))")
-        
-        switch mode {
-        case .local:
-            return try await localProvider.transcribe(audioURL: audioURL, context: context)
-        case .cloud:
-            return try await cloudProvider.transcribe(audioURL: audioURL, context: context)
+        try await withTranscriptionSlot {
+            try await self.transcribeWhenAdmitted(audioURL: audioURL, context: context)
         }
     }
-    
-    // MARK: - Validation
-    
-    /// Checks if the current mode is properly configured.
-    /// - Returns: nil if valid, or an error message describing the issue
-    func validateCurrentMode() async -> String? {
-        switch currentMode {
-        case .local:
-            // Check if a model is available
-            let modelManager = await ModelManager.shared
-            if await modelManager.selectedModel == nil {
-                if await modelManager.downloadedModels.isEmpty {
-                    return "No speech model installed. Download one in Settings."
+
+    private func transcribeWhenAdmitted(audioURL: URL, context: ContextProfile) async throws -> String {
+        let mode = currentMode
+        let dictionary = try DictationDictionary.load()
+        let engine = mode == .local ? try selectedLocalEngine() : nil
+        let language = UserDefaults.standard.string(forKey: "language") ?? "auto"
+        if let engine, !engine.supportsLanguage(language) {
+            throw TranscriptionError.invalidConfiguration("\(engine.displayName) doesn't support this language. Choose another engine or language in Settings.")
+        }
+
+        // A warm-up owns model loading/unloading until it finishes. Never unload a live engine.
+        await prewarmTask?.value
+        try Task.checkCancellation()
+        await releaseInactiveEngines(keeping: engine)
+        if engine == .whisper {
+            let manager = await ModelManager.shared
+            try await manager.waitForInitialScan()
+            guard await manager.currentModelSupportsLanguage(language) else {
+                throw TranscriptionError.invalidConfiguration("Choose a Whisper model that supports your language in Settings.")
+            }
+        }
+
+        let text: String
+        switch engine {
+        case .whisper:
+            text = try await LocalTranscriptionProvider.shared.transcribe(audioURL: audioURL, context: context)
+        case .parakeetV2:
+            text = try await ParakeetTranscriptionProvider.english.transcribe(audioURL: audioURL, context: context)
+        case .parakeetV3:
+            text = try await ParakeetTranscriptionProvider.multilingual.transcribe(audioURL: audioURL, context: context)
+        case nil:
+            text = try await CloudTranscriptionProvider.shared.transcribe(audioURL: audioURL, context: context)
+        }
+        try Task.checkCancellation()
+        return dictionary.apply(to: TranscriptionOutputFilter.filter(text))
+    }
+
+    /// Serializes transcription while allowing a cancelled caller to leave the FIFO queue.
+    func withTranscriptionSlot<T: Sendable>(
+        _ operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        try await acquireTranscriptionSlot()
+        defer { releaseTranscriptionSlot() }
+
+        // A queued task can be cancelled at the same time its slot is handed off.
+        // Install the release above before observing that cancellation.
+        try Task.checkCancellation()
+        return try await operation()
+    }
+
+    var waitingTranscriptionCount: Int {
+        transcriptionWaiters.count
+    }
+
+    private func acquireTranscriptionSlot() async throws {
+        try Task.checkCancellation()
+        let waiterID = UUID()
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else if isTranscribing {
+                    transcriptionWaiters.append(
+                        TranscriptionWaiter(id: waiterID, continuation: continuation)
+                    )
                 } else {
-                    return "Choose a speech model in Settings."
+                    isTranscribing = true
+                    continuation.resume()
                 }
             }
-            return nil
-            
-        case .cloud:
-            // Check if API key is configured
-            guard let apiKey = KeychainService.shared.load(KeychainService.Key.apiKey),
-                  !apiKey.isEmpty else {
-                return "Add your API key in Settings."
+        } onCancel: {
+            Task { await self.cancelTranscriptionWaiter(id: waiterID) }
+        }
+    }
+
+    private func cancelTranscriptionWaiter(id: UUID) {
+        guard let index = transcriptionWaiters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        let waiter = transcriptionWaiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func releaseTranscriptionSlot() {
+        guard !transcriptionWaiters.isEmpty else {
+            isTranscribing = false
+            if needsPrewarm {
+                Task { await prewarmSelectedLocalModel() }
             }
-            return nil
+            return
+        }
+
+        let nextWaiter = transcriptionWaiters.removeFirst()
+        nextWaiter.continuation.resume()
+    }
+
+    /// Warms installed models only. Downloads require an explicit Settings action.
+    func prewarmSelectedLocalModel() async {
+        guard !AppEnvironment.isRunningTests else { return }
+        guard !isTranscribing, prewarmTask == nil else {
+            needsPrewarm = true
+            return
+        }
+        needsPrewarm = false
+        let mode = currentMode
+        let engine: LocalSpeechEngine?
+        do {
+            engine = mode == .local ? try selectedLocalEngine() : nil
+        } catch {
+            logger.error("Cannot prepare speech engine: \(error.localizedDescription)")
+            return
+        }
+
+        let task = Task {
+            do {
+                await releaseInactiveEngines(keeping: engine)
+                switch engine {
+                case .whisper:
+                    try await LocalTranscriptionProvider.shared.prewarmIfInstalled()
+                case .parakeetV2:
+                    try await ParakeetTranscriptionProvider.english.prewarmIfInstalled()
+                case .parakeetV3:
+                    try await ParakeetTranscriptionProvider.multilingual.prewarmIfInstalled()
+                case nil:
+                    break
+                }
+            } catch {
+                // Settings owns visible readiness/error state; recording will report any load failure.
+                logger.info("Speech engine is not ready: \(error.localizedDescription)")
+            }
+        }
+        prewarmTask = task
+        await task.value
+        prewarmTask = nil
+        if needsPrewarm { await prewarmSelectedLocalModel() }
+    }
+
+    private func releaseInactiveEngines(keeping engine: LocalSpeechEngine?) async {
+        if engine != .whisper { await LocalTranscriptionProvider.shared.releaseContext() }
+        if engine != .parakeetV2 { await ParakeetTranscriptionProvider.english.releaseModels() }
+        if engine != .parakeetV3 { await ParakeetTranscriptionProvider.multilingual.releaseModels() }
+    }
+
+    func validateCurrentMode() async -> String? {
+        do {
+            _ = try DictationDictionary.load()
+            switch currentMode {
+            case .local:
+                let engine = try selectedLocalEngine()
+                let language = UserDefaults.standard.string(forKey: "language") ?? "auto"
+                guard engine.supportsLanguage(language) else {
+                    return "Choose an engine that supports your language in Settings."
+                }
+                if let version = engine.parakeetVersion {
+                    return await ParakeetModelManager.shared.isDownloaded(version)
+                        ? nil : "Download \(engine.displayName) in Settings."
+                }
+                let manager = await ModelManager.shared
+                try await manager.waitForInitialScan()
+                guard await manager.currentModelSupportsLanguage(language) else {
+                    return "Choose a Whisper model that supports your language in Settings."
+                }
+                return await manager.selectedModel == nil ? "Download and choose a Whisper model in Settings." : nil
+            case .cloud:
+                _ = try CloudTranscriptionConfiguration.load().endpoint()
+                guard let key = KeychainService.shared.load(KeychainService.Key.apiKey),
+                      !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return "Add your API key in Settings."
+                }
+                return nil
+            }
+        } catch {
+            return error.localizedDescription
         }
     }
 }

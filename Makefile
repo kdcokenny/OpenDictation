@@ -1,233 +1,190 @@
-# OpenDictation Makefile
-# Builds whisper.cpp XCFramework and downloads required models
+SHELL := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
 
-# Directories
+include scripts/dependencies.env
+
+PROJECT := OpenDictation.xcodeproj
+SCHEME := OpenDictation
 DEPS_DIR := deps
-WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
-FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
+WHISPER_DIR := $(DEPS_DIR)/whisper.cpp
+WHISPER_FRAMEWORK := $(WHISPER_DIR)/build-apple/whisper.xcframework
+WHISPER_ARCHIVE := $(DEPS_DIR)/whisper-v$(WHISPER_VERSION)-xcframework.zip
+WHISPER_URL := https://github.com/ggml-org/whisper.cpp/releases/download/v$(WHISPER_VERSION)/whisper-v$(WHISPER_VERSION)-xcframework.zip
+WHISPER_STAMP := $(WHISPER_DIR)/.xcframework-version
 MODELS_DIR := OpenDictation/Resources/Models
+TINY_MODEL := $(MODELS_DIR)/ggml-tiny.bin
+TINY_URL := https://huggingface.co/ggerganov/whisper.cpp/resolve/$(WHISPER_TINY_REVISION)/ggml-tiny.bin
+SILERO_MODEL := $(MODELS_DIR)/ggml-silero-v5.1.2.bin
+SILERO_URL := https://huggingface.co/ggml-org/whisper-vad/resolve/$(SILERO_VAD_REVISION)/ggml-silero-v5.1.2.bin
+DOWNLOAD := scripts/download-artifact.sh
 
-# Model URLs (from Hugging Face)
-TINY_URL := https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
-SILERO_VAD_URL := https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
+BUILD_DIR ?= build
+DIST_DIR ?= dist
+APP_PATH := $(BUILD_DIR)/Build/Products/Release/OpenDictation.app
+TEST_RESULTS := $(BUILD_DIR)/TestResults.xcresult
+RELEASE_VERSION ?= 0.0.0-dev
+BUILD_NUMBER ?= 0
+XCODEBUILD_FLAGS ?=
 
-.PHONY: all clean whisper models setup build check help dev reset release dmg run-release run lint lint-fix lsp test
+.PHONY: all build check ci clean clean-all dev dmg generate help lint lint-fix lsp models release reset run run-release setup test verify-release whisper
 
-# Default target
-all: check setup build
+all: build
 
-# Development workflow
-dev: setup build run
+dev: build run
 
-# Prerequisites check
 check:
-	@echo "Checking prerequisites..."
-	@command -v git >/dev/null 2>&1 || { echo "Error: git is not installed"; exit 1; }
-	@command -v xcodebuild >/dev/null 2>&1 || { echo "Error: Xcode is not installed"; exit 1; }
-	@command -v curl >/dev/null 2>&1 || { echo "Error: curl is not installed"; exit 1; }
-	@echo "Prerequisites OK"
+	@command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
+	@command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
+	@command -v shasum >/dev/null || { echo "shasum is required" >&2; exit 1; }
+	@command -v unzip >/dev/null || { echo "unzip is required" >&2; exit 1; }
+	@command -v xcodebuild >/dev/null || { echo "Xcode is required" >&2; exit 1; }
+	@command -v xcodegen >/dev/null || { echo "xcodegen is required. Install it with: brew install xcodegen" >&2; exit 1; }
 
-# Build whisper.cpp XCFramework
 whisper:
-	@mkdir -p $(DEPS_DIR)
-	@if [ ! -d "$(FRAMEWORK_PATH)" ]; then \
-		echo "Building whisper.xcframework..."; \
-		if [ ! -d "$(WHISPER_CPP_DIR)" ]; then \
-			echo "Cloning whisper.cpp..."; \
-			git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git $(WHISPER_CPP_DIR); \
-		fi; \
-		echo "Running build-xcframework.sh (this may take a few minutes)..."; \
-		cd $(WHISPER_CPP_DIR) && ./build-xcframework.sh; \
-		echo "whisper.xcframework built successfully"; \
-	else \
-		echo "whisper.xcframework already exists, skipping build"; \
-	fi
+	@expected_stamp='$(WHISPER_VERSION):$(WHISPER_XCFRAMEWORK_SHA256)'; \
+	actual_stamp="$$(cat '$(WHISPER_STAMP)' 2>/dev/null || true)"; \
+	if [[ -d '$(WHISPER_FRAMEWORK)' && "$$actual_stamp" == "$$expected_stamp" ]]; then \
+		echo "Verified whisper.cpp $(WHISPER_VERSION) XCFramework"; \
+		exit 0; \
+	fi; \
+	'$(DOWNLOAD)' '$(WHISPER_URL)' '$(WHISPER_XCFRAMEWORK_SHA256)' '$(WHISPER_ARCHIVE)'; \
+	extract_dir="$$(mktemp -d '$(DEPS_DIR)/whisper.extract.XXXXXX')"; \
+	trap 'rm -rf "$$extract_dir"' EXIT; \
+	unzip -q '$(WHISPER_ARCHIVE)' -d "$$extract_dir"; \
+	test -d "$$extract_dir/build-apple/whisper.xcframework" || { echo "whisper.cpp archive has an unexpected layout" >&2; exit 1; }; \
+	mkdir -p '$(WHISPER_DIR)'; \
+	rm -rf '$(WHISPER_DIR)/build-apple'; \
+	mv "$$extract_dir/build-apple" '$(WHISPER_DIR)/build-apple'; \
+	printf '%s\n' "$$expected_stamp" > '$(WHISPER_STAMP)'; \
+	echo "Installed whisper.cpp $(WHISPER_VERSION) XCFramework"
 
-# Download bundled models
 models:
-	@echo "Downloading models..."
-	@mkdir -p $(MODELS_DIR)
-	@if [ ! -f "$(MODELS_DIR)/ggml-tiny.bin" ]; then \
-		echo "Downloading ggml-tiny.bin (~75MB multilingual)..."; \
-		curl -L --progress-bar -o "$(MODELS_DIR)/ggml-tiny.bin" "$(TINY_URL)"; \
-		echo "Downloaded ggml-tiny.bin"; \
-	else \
-		echo "ggml-tiny.bin already exists"; \
-	fi
-	@if [ ! -f "$(MODELS_DIR)/ggml-silero-v5.1.2.bin" ]; then \
-		echo "Downloading ggml-silero-v5.1.2.bin (~2MB VAD model)..."; \
-		curl -L --progress-bar -o "$(MODELS_DIR)/ggml-silero-v5.1.2.bin" "$(SILERO_VAD_URL)"; \
-		echo "Downloaded ggml-silero-v5.1.2.bin"; \
-	else \
-		echo "VAD model already exists"; \
-	fi
+	@'$(DOWNLOAD)' '$(TINY_URL)' '$(WHISPER_TINY_SHA256)' '$(TINY_MODEL)'
+	@'$(DOWNLOAD)' '$(SILERO_URL)' '$(SILERO_VAD_SHA256)' '$(SILERO_MODEL)'
 
-# Full setup: build framework and download models
-setup: whisper models
-	@echo ""
-	@echo "Setup complete!"
-	@echo "Framework: $(FRAMEWORK_PATH)"
-	@echo "Models: $(MODELS_DIR)"
-	@echo ""
-	@echo "Next: run 'make build' to build the app"
+generate:
+	@xcodegen generate --spec project.yml
 
-# Setup LSP support for non-Xcode editors (VSCode, Cursor, Neovim, etc.)
-lsp:
-	@if command -v xcode-build-server >/dev/null 2>&1; then \
-		echo "Generating LSP configuration..."; \
-		xcode-build-server config -project OpenDictation.xcodeproj -scheme OpenDictation; \
-		echo "buildServer.json created. Restart your editor/LSP to apply."; \
-	else \
-		echo "xcode-build-server not installed."; \
-		echo "Install with: brew install xcode-build-server"; \
-		exit 1; \
-	fi
+setup:
+	@$(MAKE) check
+	@$(MAKE) whisper
+	@$(MAKE) models
+	@$(MAKE) generate
+	@echo "Setup complete"
 
-# Build the app (debug)
-build:
-	@if [ ! -f buildServer.json ] && command -v xcode-build-server >/dev/null 2>&1; then \
-		echo "buildServer.json not found, generating LSP configuration..."; \
-		$(MAKE) lsp; \
-	fi
-	@echo "Building OpenDictation Dev..."
-	@xcodebuild -project OpenDictation.xcodeproj \
-		-scheme OpenDictation \
-		-configuration "Debug (Dev)" \
+build: setup
+	@xcodebuild \
+		-project '$(PROJECT)' \
+		-scheme '$(SCHEME)' \
+		-configuration 'Debug (Dev)' \
+		-derivedDataPath '$(BUILD_DIR)' \
+		$(XCODEBUILD_FLAGS) \
 		build
-	@echo ""
-	@echo "Debug build complete!"
- 
-# Run tests (depends on setup to ensure .xcodeproj is up to date)
+
 test: setup
-	@echo "Running tests..."
-	@xcodebuild -project OpenDictation.xcodeproj \
-		-scheme OpenDictationTests \
+	@rm -rf '$(TEST_RESULTS)'
+	@xcodebuild \
+		-project '$(PROJECT)' \
+		-scheme '$(SCHEME)' \
+		-configuration Debug \
 		-destination 'platform=macOS' \
+		-derivedDataPath '$(BUILD_DIR)' \
+		-resultBundlePath '$(TEST_RESULTS)' \
+		$(XCODEBUILD_FLAGS) \
 		test
 
-
-# Run the app (debug build)
-run:
-	@echo "Running OpenDictation Dev..."
-	@APP_PATH=$$(xcodebuild -project OpenDictation.xcodeproj -scheme OpenDictation -configuration "Debug (Dev)" -showBuildSettings 2>/dev/null | grep -m1 'BUILT_PRODUCTS_DIR' | sed 's/.*= //'); \
-	open "$$APP_PATH/OpenDictation Dev.app"
-
-# Clean build artifacts
-clean:
-	@echo "Cleaning..."
-	@rm -rf build
-	@DERIVED_DATA=$$(xcodebuild -project OpenDictation.xcodeproj -scheme OpenDictation -showBuildSettings 2>/dev/null | grep -m1 'BUILD_DIR' | sed 's/.*= //' | sed 's|/Build/Products||'); \
-	if [ -n "$$DERIVED_DATA" ] && [ -d "$$DERIVED_DATA" ]; then \
-		echo "Cleaning DerivedData: $$DERIVED_DATA"; \
-		rm -rf "$$DERIVED_DATA"; \
-	fi
-	@echo "Clean complete"
-
-# Deep clean (removes deps and build)
-clean-all: clean
-	@echo "Removing dependencies..."
-	rm -rf $(DEPS_DIR)
-	@echo "Note: Models in $(MODELS_DIR) preserved. Remove manually if needed."
-	@echo "Deep clean complete"
-
-# Reset app state for testing (clears preferences and downloaded models)
-reset:
-	@echo "Resetting OpenDictation to fresh state..."
-	@pkill -x OpenDictation 2>/dev/null || true
-	@defaults delete com.opendictation 2>/dev/null || true
-	@rm -rf ~/Library/Application\ Support/com.opendictation/Models/
-	@echo "Reset complete. Run 'make run' to test fresh install flow."
-
-# Build release app
-release:
-	@echo "Building release..."
-	@xcodebuild -project OpenDictation.xcodeproj \
-		-scheme OpenDictation \
+release: setup
+	@xcodebuild \
+		-project '$(PROJECT)' \
+		-scheme '$(SCHEME)' \
 		-configuration Release \
-		build
-	@echo ""
-	@echo "Release build complete!"
+		-derivedDataPath '$(BUILD_DIR)' \
+		MARKETING_VERSION='$(RELEASE_VERSION)' \
+		CURRENT_PROJECT_VERSION='$(BUILD_NUMBER)' \
+		ARCHS=arm64 \
+		$(XCODEBUILD_FLAGS) \
+		clean build
+	@scripts/set-app-version.sh '$(APP_PATH)' '$(RELEASE_VERSION)' '$(BUILD_NUMBER)'
 
-# Create styled DMG from release build
-dmg: release
-	@echo "Creating styled DMG..."
-	@command -v create-dmg >/dev/null 2>&1 || { echo "Installing create-dmg..."; brew install create-dmg; }
-	@APP_PATH=$$(xcodebuild -project OpenDictation.xcodeproj -scheme OpenDictation -configuration Release -showBuildSettings 2>/dev/null | grep -m1 'BUILT_PRODUCTS_DIR' | sed 's/.*= //'); \
-	codesign --deep --force -s - "$$APP_PATH/OpenDictation.app"; \
-	rm -f ~/Downloads/OpenDictation-local.dmg; \
-	create-dmg \
-		--volname "Open Dictation" \
-		--volicon "OpenDictation/Resources/DMG/VolumeIcon.icns" \
-		--background "OpenDictation/Resources/DMG/background.tiff" \
+verify-release: release
+	@test -x '$(APP_PATH)/Contents/MacOS/OpenDictation' || { echo "Release executable is missing" >&2; exit 1; }
+	@tiny_model="$$(find '$(APP_PATH)/Contents/Resources' -type f -name ggml-tiny.bin -print -quit)"; \
+	test -n "$$tiny_model" || { echo "ggml-tiny.bin is missing from the app" >&2; exit 1; }; \
+	printf '%s  %s\n' '$(WHISPER_TINY_SHA256)' "$$tiny_model" | shasum -a 256 -c -
+	@silero_model="$$(find '$(APP_PATH)/Contents/Resources' -type f -name ggml-silero-v5.1.2.bin -print -quit)"; \
+	test -n "$$silero_model" || { echo "Silero VAD model is missing from the app" >&2; exit 1; }; \
+	printf '%s  %s\n' '$(SILERO_VAD_SHA256)' "$$silero_model" | shasum -a 256 -c -
+	@test -d '$(APP_PATH)/Contents/Frameworks/whisper.framework' || { echo "whisper.framework is missing from the app" >&2; exit 1; }
+	@echo "Verified release app and bundled resources"
+
+lint:
+	@command -v swiftlint >/dev/null || { echo "SwiftLint is required. Install it with: brew install swiftlint" >&2; exit 1; }
+	@swiftlint --strict
+
+lint-fix:
+	@command -v swiftlint >/dev/null || { echo "SwiftLint is required. Install it with: brew install swiftlint" >&2; exit 1; }
+	@swiftlint --fix
+	@swiftlint --strict
+
+ci:
+	@$(MAKE) lint
+	@$(MAKE) test
+	@$(MAKE) verify-release
+
+dmg: verify-release
+	@command -v create-dmg >/dev/null || { echo "create-dmg is required. Install it with: brew install create-dmg" >&2; exit 1; }
+	@mkdir -p '$(DIST_DIR)'
+	@codesign --deep --force --sign - --entitlements OpenDictation/OpenDictation.entitlements '$(APP_PATH)'
+	@rm -f '$(DIST_DIR)/OpenDictation-local.dmg'
+	@create-dmg \
+		--volname 'Open Dictation' \
+		--volicon 'OpenDictation/Resources/DMG/VolumeIcon.icns' \
+		--background 'OpenDictation/Resources/DMG/background.tiff' \
 		--window-pos 200 120 \
 		--window-size 500 400 \
 		--icon-size 70 \
-		--icon "OpenDictation.app" 100 200 \
-		--hide-extension "OpenDictation.app" \
+		--icon 'OpenDictation.app' 100 200 \
+		--hide-extension 'OpenDictation.app' \
 		--app-drop-link 350 200 \
-		~/Downloads/OpenDictation-local.dmg \
-		"$$APP_PATH/OpenDictation.app"
-	@echo ""
-	@echo "DMG created: ~/Downloads/OpenDictation-local.dmg"
+		'$(DIST_DIR)/OpenDictation-local.dmg' \
+		'$(APP_PATH)'
+	@echo "Created $(DIST_DIR)/OpenDictation-local.dmg with an ad hoc signature"
 
-# Run the release build
+lsp: generate
+	@command -v xcode-build-server >/dev/null || { echo "xcode-build-server is required. Install it with: brew install xcode-build-server" >&2; exit 1; }
+	@xcode-build-server config -project '$(PROJECT)' -scheme '$(SCHEME)'
+
+run: build
+	@open '$(BUILD_DIR)/Build/Products/Debug (Dev)/OpenDictation Dev.app'
+
 run-release: release
-	@APP_PATH=$$(xcodebuild -project OpenDictation.xcodeproj -scheme OpenDictation -configuration Release -showBuildSettings 2>/dev/null | grep -m1 'BUILT_PRODUCTS_DIR' | sed 's/.*= //'); \
-	open "$$APP_PATH/OpenDictation.app"
+	@open '$(APP_PATH)'
 
-# Lint Swift code with SwiftLint
-lint:
-	@if which swiftlint >/dev/null; then \
-		swiftlint; \
-	else \
-		echo "SwiftLint not installed. Run: brew install swiftlint"; \
-		exit 1; \
-	fi
+clean:
+	@for path in '$(BUILD_DIR)' '$(DIST_DIR)'; do \
+		if [[ -z "$$path" || "$$path" == /* || "$$path" == '.' || "$$path" == '..' || "$$path" == *'../'* || "$$path" == *'/..' ]]; then \
+			echo "Refusing to clean unsafe path: $$path" >&2; \
+			exit 1; \
+		fi; \
+	done
+	@rm -rf -- '$(BUILD_DIR)' '$(DIST_DIR)'
 
-# Auto-fix lint violations where possible
-lint-fix:
-	@if which swiftlint >/dev/null; then \
-		swiftlint --fix && swiftlint; \
-	else \
-		echo "SwiftLint not installed. Run: brew install swiftlint"; \
-		exit 1; \
-	fi
+clean-all: clean
+	@rm -rf -- '$(DEPS_DIR)'
 
-# Help
+reset:
+	@pkill -x OpenDictation 2>/dev/null || true
+	@defaults delete com.opendictation 2>/dev/null || true
+	@rm -rf -- "$$HOME/Library/Application Support/com.opendictation/Models"
+
 help:
-	@echo "OpenDictation Build System"
-	@echo ""
-	@echo "Targets:"
-	@echo "  check       Check if required CLI tools are installed"
-	@echo "  whisper     Clone and build whisper.cpp XCFramework"
-	@echo "  models      Download bundled Whisper models"
-	@echo "  setup       Build framework + download models (run this first)"
-	@echo "  build       Build the app (debug)"
-	@echo "  run         Run the debug build"
-	@echo "  dev         Setup + build + run (for development)"
-	@echo "  all         Run check + setup + build (default)"
-	@echo "  clean       Clean build artifacts"
-	@echo "  clean-all   Clean + remove deps directory"
-	@echo "  reset       Reset app state (clear prefs + downloaded models)"
-	@echo "  release     Build release version"
-	@echo "  dmg         Create DMG from release build"
-	@echo "  run-release Run the release build"
-	@echo "  lint        Run SwiftLint on all Swift files"
-	@echo "  lint-fix    Auto-fix SwiftLint violations"
-	@echo "  lsp         Setup LSP for non-Xcode editors (VSCode, Neovim, etc.)"
-	@echo "  help        Show this help message"
-	@echo ""
-	@echo "Quick start (development):"
-	@echo "  make setup    # First time: build framework + download models"
-	@echo "  make build    # Build the app (debug)"
-	@echo "  make run      # Run the app"
-	@echo ""
-	@echo "Non-Xcode editors (VSCode, Cursor, Neovim):"
-	@echo "  brew install xcode-build-server"
-	@echo "  make lsp      # Generate LSP configuration"
-	@echo "  make build    # Build once to populate indexes"
-	@echo ""
-	@echo "Release testing:"
-	@echo "  make release     # Build release version"
-	@echo "  make dmg         # Create DMG for testing"
-	@echo "  make run-release # Run release build directly"
+	@echo 'OpenDictation build targets'
+	@echo '  setup          Download verified dependencies and generate the Xcode project'
+	@echo '  build          Build the development app'
+	@echo '  test           Run the macOS unit tests'
+	@echo '  lint           Run SwiftLint in strict mode'
+	@echo '  release        Make a clean unsigned release build in build/'
+	@echo '  verify-release Check the app executable, framework, and bundled models'
+	@echo '  ci             Run lint, tests, and release verification'
+	@echo '  dmg            Create a local ad hoc signed DMG in dist/'
+	@echo '  clean-all      Remove generated builds and downloaded dependencies'

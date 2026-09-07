@@ -1,6 +1,7 @@
 import Foundation
 import os.log
 import Combine
+import CryptoKit
 import Network
 
 /// Manages Whisper model downloads, storage, and lifecycle.
@@ -9,6 +10,7 @@ import Network
 /// Adapted from VoiceInk/Whisper/WhisperState+LocalModelManager.swift
 @MainActor
 final class ModelManager: ObservableObject {
+    private static let stalePartialFileAge: TimeInterval = 24 * 60 * 60
     
     // MARK: - Singleton
     
@@ -28,6 +30,9 @@ final class ModelManager: ObservableObject {
     
     /// Download progress for models being downloaded (model name -> progress 0-1)
     @Published private(set) var downloadProgress: [String: Double] = [:]
+
+    /// The latest user-visible download or validation error for each model.
+    @Published private(set) var downloadErrors: [String: String] = [:]
     
     /// Whether user has manually overridden automatic model selection
     @Published var isManualModelOverride: Bool {
@@ -45,13 +50,34 @@ final class ModelManager: ObservableObject {
     
     /// Active downloaders (for progress tracking and cancellation)
     private var activeDownloaders: [String: ModelDownloader] = [:]
+
+    private let models: [WhisperModel]
+    private let modelScanner: @Sendable (URL, [WhisperModel]) -> ModelDirectoryScan
+    private var initialModelScanTask: Task<ModelDirectoryScan, Never>?
+    private var didFinishInitialModelScan = false
+    private var modelStateGeneration = 0
+
+    private var bundledModel: WhisperModel {
+        guard let model = models.first(where: { $0.isBundled }) else {
+            preconditionFailure("ModelManager requires one bundled model definition.")
+        }
+        return model
+    }
     
     /// Network path monitor for Wi-Fi detection (used for synchronous currentPath access)
     private let networkMonitor = NWPathMonitor()
     
     // MARK: - Initialization
     
-    internal init(modelsDirectory: URL? = nil) {
+    internal init(
+        modelsDirectory: URL? = nil,
+        models: [WhisperModel] = PredefinedModels.all,
+        modelScanner: @escaping @Sendable (URL, [WhisperModel]) -> ModelDirectoryScan = { directory, models in
+            ModelDirectoryScanner.scan(directory: directory, models: models)
+        }
+    ) {
+        self.models = models
+        self.modelScanner = modelScanner
         if let customDir = modelsDirectory {
             self.modelsDirectory = customDir
         } else {
@@ -63,50 +89,53 @@ final class ModelManager: ObservableObject {
         }
         
         // Load selected model from UserDefaults
-        selectedModelName = UserDefaults.standard.string(forKey: "selectedLocalModel")
+        let defaultModelName = models.first(where: { $0.isBundled })?.name
             ?? PredefinedModels.bundled.name
+        selectedModelName = UserDefaults.standard.string(forKey: "selectedLocalModel")
+            ?? defaultModelName
         
         // Load manual override preference
         isManualModelOverride = UserDefaults.standard.bool(forKey: "isManualModelOverride")
         
-        // Create directory and load available models
+        // Validate installed models away from the main actor. Until this finishes,
+        // the published list stays empty and no unverified model is considered ready.
         createModelsDirectoryIfNeeded()
-        loadDownloadedModels()
-        
-        // Validate selected model exists - fall back to bundled if not (Apple-style: always functional)
-        validateSelectedModelExists()
+        removeOrphanedPartialFiles()
+        let directory = self.modelsDirectory
+        let modelCatalog = self.models
+        let scanner = self.modelScanner
+        initialModelScanTask = Task.detached(priority: .utility) {
+            scanner(directory, modelCatalog)
+        }
         
         // Start network monitoring for Wi-Fi detection
         startNetworkMonitoring()
+
+        Task { @MainActor [weak self] in
+            await self?.finishInitialModelScan()
+        }
     }
     
     /// Validates that the selected model file actually exists on disk.
     /// If not, falls back to the bundled model to ensure dictation always works.
     /// Apple philosophy: default state should always be functional.
     internal func validateSelectedModelExists() {
-        let selectedPath = modelsDirectory.appendingPathComponent("\(selectedModelName).bin").path
-        
-        // If selected model exists, we're good
-        if FileManager.default.fileExists(atPath: selectedPath) {
+        guard didFinishInitialModelScan else { return }
+
+        if downloadedModels.contains(where: { $0.name == selectedModelName }) {
             return
         }
         
-        // Check if ANY models exist in the directory
-        let hasAnyModels = (try? FileManager.default.contentsOfDirectory(atPath: modelsDirectory.path))?
-            .contains { $0.hasSuffix(".bin") } ?? false
-        
         // If no models exist, this is expected first-launch state
         // The bundled model will be copied shortly by setupBundledModelIfNeeded()
-        guard hasAnyModels else {
+        guard !downloadedModels.isEmpty else {
             logger.debug("No models yet - expected on first launch")
             return
         }
         
         // Models exist but selected one is missing - fall back to bundled
-        let bundledName = PredefinedModels.bundled.name
-        let bundledPath = modelsDirectory.appendingPathComponent("\(bundledName).bin").path
-        
-        if FileManager.default.fileExists(atPath: bundledPath) {
+        let bundledName = bundledModel.name
+        if downloadedModels.contains(where: { $0.name == bundledName }) {
             logger.info("Selected model '\(self.selectedModelName)' not found, falling back to '\(bundledName)'")
             selectedModelName = bundledName
             // Clear manual override since the model they selected is gone
@@ -116,10 +145,6 @@ final class ModelManager: ObservableObject {
             logger.info("Falling back to available model: \(firstModel.name)")
             selectedModelName = firstModel.name
             isManualModelOverride = false
-        } else {
-            // This shouldn't happen - hasAnyModels was true but downloadedModels is empty
-            // Could be non-.bin files in directory. Log for debugging.
-            logger.warning("Models directory has files but no valid .bin models found")
         }
     }
     
@@ -175,28 +200,93 @@ final class ModelManager: ObservableObject {
             logger.error("Failed to create models directory: \(error.localizedDescription)")
         }
     }
+
+    /// Remove old staging files at startup. The age guard avoids touching a file
+    /// that another app instance may still be validating.
+    private func removeOrphanedPartialFiles() {
+        guard let fileURLs = try? FileManager.default.contentsOfDirectory(
+            at: modelsDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey]
+        ) else { return }
+
+        for url in fileURLs where url.pathExtension == "partial" {
+            let values = try? url.resourceValues(
+                forKeys: [.isRegularFileKey, .contentModificationDateKey]
+            )
+            guard values?.isRegularFile == true,
+                  let modifiedAt = values?.contentModificationDate,
+                  Date().timeIntervalSince(modifiedAt) >= Self.stalePartialFileAge else {
+                continue
+            }
+            do {
+                try FileManager.default.removeItem(at: url)
+                logger.info("Removed stale model staging file: \(url.lastPathComponent)")
+            } catch {
+                logger.warning("Couldn't remove stale model staging file: \(error.localizedDescription)")
+            }
+        }
+    }
     
     // MARK: - Model Loading
+
+    /// Waits until every model discovered at launch has passed size and checksum validation.
+    /// Call this before reading model availability for a transcription decision.
+    func waitForInitialScan() async throws {
+        try Task.checkCancellation()
+        guard !didFinishInitialModelScan, let task = initialModelScanTask else { return }
+
+        let scan = try await InitialModelScanWaiter.value(of: task)
+        finishInitialModelScan(with: scan)
+        try Task.checkCancellation()
+    }
     
-    /// Scans the models directory and updates the list of downloaded models.
-    func loadDownloadedModels() {
-        do {
-            let fileURLs = try FileManager.default.contentsOfDirectory(
-                at: modelsDirectory,
-                includingPropertiesForKeys: nil
-            )
-            
-            downloadedModels = fileURLs.compactMap { url in
-                guard url.pathExtension == "bin" else { return nil }
-                let name = url.deletingPathExtension().lastPathComponent
-                return DownloadedModel(name: name, url: url)
-            }
-            
-            logger.info("Found \(self.downloadedModels.count) downloaded models")
-        } catch {
-            logger.error("Failed to load downloaded models: \(error.localizedDescription)")
-            downloadedModels = []
+    /// Rescans installed models without blocking the main actor on file hashes.
+    func loadDownloadedModels() async throws {
+        try await waitForInitialScan()
+
+        let directory = modelsDirectory
+        let modelCatalog = models
+        let scanner = modelScanner
+        let generation = modelStateGeneration
+        let scan = await Task.detached(priority: .utility) {
+            scanner(directory, modelCatalog)
+        }.value
+        try Task.checkCancellation()
+        guard generation == modelStateGeneration else { return }
+        apply(scan)
+    }
+
+    private func finishInitialModelScan() async {
+        guard !didFinishInitialModelScan, let task = initialModelScanTask else { return }
+        let scan = await task.value
+        finishInitialModelScan(with: scan)
+    }
+
+    private func finishInitialModelScan(with scan: ModelDirectoryScan) {
+        guard !didFinishInitialModelScan else { return }
+
+        apply(scan)
+        didFinishInitialModelScan = true
+        initialModelScanTask = nil
+        validateSelectedModelExists()
+    }
+
+    private func apply(_ scan: ModelDirectoryScan) {
+        downloadedModels = scan.downloadedModels
+        for model in scan.downloadedModels {
+            downloadErrors.removeValue(forKey: model.name)
         }
+        for (name, message) in scan.validationErrors {
+            downloadErrors[name] = message
+            logger.error("Ignoring invalid model \(name): \(message)")
+        }
+        for filename in scan.unrecognizedFiles {
+            logger.warning("Ignoring unrecognized model file: \(filename)")
+        }
+        if let directoryError = scan.directoryError {
+            logger.error("Failed to load downloaded models: \(directoryError)")
+        }
+        logger.info("Found \(self.downloadedModels.count) downloaded models")
     }
     
     /// Checks if a model is downloaded.
@@ -214,11 +304,16 @@ final class ModelManager: ObservableObject {
     /// Copies the bundled model from app bundle to Application Support on first launch.
     /// This enables instant first-run experience.
     func setupBundledModelIfNeeded() async {
-        let bundledModel = PredefinedModels.bundled
+        do {
+            try await waitForInitialScan()
+        } catch {
+            return
+        }
+        let bundledModel = self.bundledModel
         
-        // Skip if already copied
+        // Skip only after validating the installed copy.
         let destinationURL = modelsDirectory.appendingPathComponent(bundledModel.filename)
-        guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
+        guard !isDownloaded(bundledModel) else {
             logger.debug("Bundled model already exists at \(destinationURL.path)")
             return
         }
@@ -247,13 +342,20 @@ final class ModelManager: ObservableObject {
             return
         }
         
-        // Copy to Application Support
+        let temporaryURL = modelsDirectory
+            .appendingPathComponent(".\(bundledModel.filename).\(UUID().uuidString).partial")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+
         do {
-            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            try FileManager.default.copyItem(at: sourceURL, to: temporaryURL)
+            try await ModelFileValidator.validateAsync(fileAt: temporaryURL, for: bundledModel)
+            try installValidatedModel(from: temporaryURL, to: destinationURL)
             logger.info("Copied bundled model '\(bundledModel.name)' to \(destinationURL.path)")
-            loadDownloadedModels()
+            recordInstalledModel(bundledModel, at: destinationURL)
+            validateSelectedModelExists()
         } catch {
             logger.error("Failed to copy bundled model: \(error.localizedDescription)")
+            downloadErrors[bundledModel.name] = error.localizedDescription
         }
     }
     
@@ -261,10 +363,14 @@ final class ModelManager: ObservableObject {
     
     /// Downloads a model from Hugging Face.
     /// Progress is reported via the `downloadProgress` published property.
-    func downloadModel(_ model: WhisperModel) async {
-        guard let url = URL(string: model.downloadURL) else {
-            logger.error("Invalid download URL for \(model.name)")
-            return
+    func downloadModel(_ model: WhisperModel) async throws {
+        try await waitForInitialScan()
+        guard let url = URL(string: model.downloadURL),
+              url.scheme == "https",
+              url.host != nil else {
+            let error = ModelDownloadError.invalidURL(model.downloadURL)
+            recordDownloadFailure(error, for: model.name)
+            throw error
         }
         
         // Skip if already downloaded
@@ -275,17 +381,17 @@ final class ModelManager: ObservableObject {
         
         // Check if already downloading
         guard activeDownloaders[model.name] == nil else {
-            logger.info("Model \(model.name) already downloading")
-            return
+            throw ModelDownloadError.alreadyDownloading(model.name)
         }
         
         logger.info("Starting download of \(model.name) from \(model.downloadURL)")
         downloadProgress[model.name] = 0
+        downloadErrors.removeValue(forKey: model.name)
         
         let destinationURL = modelsDirectory.appendingPathComponent(model.filename)
         
         // Create downloader with delegate-based progress tracking
-        let downloader = ModelDownloader()
+        let downloader = ModelDownloader(temporaryDirectory: modelsDirectory)
         activeDownloaders[model.name] = downloader
         
         // Set up progress handler (throttled by ModelDownloader)
@@ -296,39 +402,64 @@ final class ModelManager: ObservableObject {
         }
         
         // Start download and wait for completion
-        let result = await withCheckedContinuation { continuation in
-            downloader.completionHandler = { tempURL, error in
-                continuation.resume(returning: (tempURL, error))
-            }
-            downloader.start(url: url)
-        }
-        
-        // Clean up downloader
-        activeDownloaders.removeValue(forKey: model.name)
-        
-        // Handle result
-        if let error = result.1 {
-            logger.error("Failed to download \(model.name): \(error.localizedDescription)")
+        defer {
+            activeDownloaders.removeValue(forKey: model.name)
             downloadProgress.removeValue(forKey: model.name)
-            return
         }
-        
-        guard let tempURL = result.0 else {
-            logger.error("Download completed but no file received for \(model.name)")
-            downloadProgress.removeValue(forKey: model.name)
-            return
-        }
-        
-        // Move to final destination
+
         do {
-            try FileManager.default.moveItem(at: tempURL, to: destinationURL)
+            let temporaryURL = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+                    downloader.completionHandler = { tempURL, error in
+                        if let error {
+                            continuation.resume(throwing: error)
+                        } else if let tempURL {
+                            continuation.resume(returning: tempURL)
+                        } else {
+                            continuation.resume(throwing: ModelDownloadError.missingTemporaryFile)
+                        }
+                    }
+                    downloader.start(url: url)
+                }
+            } onCancel: {
+                Task { @MainActor in
+                    downloader.cancel()
+                }
+            }
+
+            defer { try? FileManager.default.removeItem(at: temporaryURL) }
+            try Task.checkCancellation()
+            try await ModelFileValidator.validateAsync(fileAt: temporaryURL, for: model)
+            try Task.checkCancellation()
+            try installValidatedModel(from: temporaryURL, to: destinationURL)
+
             logger.info("Downloaded \(model.name) to \(destinationURL.path)")
-            downloadProgress.removeValue(forKey: model.name)
-            loadDownloadedModels()
+            recordInstalledModel(model, at: destinationURL)
         } catch {
-            logger.error("Failed to move downloaded file: \(error.localizedDescription)")
-            downloadProgress.removeValue(forKey: model.name)
+            recordDownloadFailure(error, for: model.name)
+            throw error
         }
+    }
+
+    private func installValidatedModel(from temporaryURL: URL, to destinationURL: URL) throws {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+        }
+    }
+
+    private func recordDownloadFailure(_ error: Error, for modelName: String) {
+        logger.error("Failed to download \(modelName): \(error.localizedDescription)")
+        downloadErrors[modelName] = error.localizedDescription
+    }
+
+    private func recordInstalledModel(_ model: WhisperModel, at url: URL) {
+        modelStateGeneration += 1
+        downloadedModels.removeAll { $0.name == model.name }
+        downloadedModels.append(DownloadedModel(name: model.name, url: url))
+        downloadErrors.removeValue(forKey: model.name)
     }
     
     // MARK: - Auto Model Selection
@@ -347,13 +478,14 @@ final class ModelManager: ObservableObject {
     
     /// Returns the currently selected model definition, if found.
     var currentModel: WhisperModel? {
-        PredefinedModels.find(byName: selectedModelName)
+        models.first { $0.name == selectedModelName }
     }
     
     /// Checks if the current model supports the given language.
     func currentModelSupportsLanguage(_ languageCode: String) -> Bool {
         guard let model = currentModel else {
-            return true // Unknown model, assume it works
+            logger.error("Selected model definition not found: \(self.selectedModelName)")
+            return false
         }
         return model.supportsLanguage(languageCode)
     }
@@ -361,8 +493,7 @@ final class ModelManager: ObservableObject {
     /// Checks if a specific model is downloaded by name.
     /// Reference: https://github.com/argmaxinc/WhisperKit/blob/main/Examples/WhisperAX/WhisperAX/Views/ContentView.swift#L984
     func isModelDownloaded(_ modelName: String) -> Bool {
-        let modelPath = modelsDirectory.appendingPathComponent("\(modelName).bin").path
-        return FileManager.default.fileExists(atPath: modelPath)
+        downloadedModels.contains { $0.name == modelName }
     }
     
     /// Checks if an upgrade is needed and starts silent download if on Wi-Fi.
@@ -374,6 +505,12 @@ final class ModelManager: ObservableObject {
     /// 3. Compare recommended model to current
     /// 4. If different and not downloaded and on Wi-Fi → start silent download
     func checkAndUpgradeIfNeeded() async {
+        do {
+            try await waitForInitialScan()
+        } catch {
+            return
+        }
+
         // Skip if user has explicitly chosen a model
         guard !isManualModelOverride else {
             logger.debug("[AutoSelect] Skipping: manual override active")
@@ -423,8 +560,12 @@ final class ModelManager: ObservableObject {
     /// Downloads a model silently (no UI alerts) for auto-upgrade.
     /// On completion, automatically switches to the new model.
     private func downloadModelSilently(_ model: WhisperModel) async {
-        // Use existing download infrastructure but don't show alerts
-        await downloadModel(model)
+        do {
+            try await downloadModel(model)
+        } catch {
+            logger.error("Background model download failed: \(error.localizedDescription)")
+            return
+        }
         
         // If download succeeded and we're still in auto mode, switch to new model
         if isModelDownloaded(model.name) && !isManualModelOverride {
@@ -471,6 +612,11 @@ final class ModelManager: ObservableObject {
     /// - Returns: Whether the current model supports the language (for UI warnings)
     @discardableResult
     func handleLanguageChange(to languageCode: String) async -> Bool {
+        do {
+            try await waitForInitialScan()
+        } catch {
+            return false
+        }
         logger.info("[LanguageChange] Language changed to: \(languageCode)")
         
         // Check if current model supports this language
@@ -502,7 +648,7 @@ final class ModelManager: ObservableObject {
         }
         
         // Auto mode: fall back to bundled multilingual model immediately
-        let bundledName = PredefinedModels.bundled.name
+        let bundledName = bundledModel.name
         logger.info("[LanguageChange] Falling back to bundled model: \(bundledName)")
         selectedModelName = bundledName
         
@@ -571,6 +717,251 @@ final class ModelManager: ObservableObject {
     }
 }
 
+// MARK: - Model Validation
+
+private final class InitialModelScanWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<ModelDirectoryScan, Error>?
+    private var result: Result<ModelDirectoryScan, Error>?
+
+    static func value(
+        of task: Task<ModelDirectoryScan, Never>
+    ) async throws -> ModelDirectoryScan {
+        let waiter = InitialModelScanWaiter()
+        Task.detached {
+            let scan = await task.value
+            waiter.resolve(.success(scan))
+        }
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiter.install(continuation)
+            }
+        } onCancel: {
+            waiter.resolve(.failure(CancellationError()))
+        }
+    }
+
+    private func install(
+        _ continuation: CheckedContinuation<ModelDirectoryScan, Error>
+    ) {
+        lock.lock()
+        if let result {
+            lock.unlock()
+            continuation.resume(with: result)
+        } else {
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    private func resolve(_ result: Result<ModelDirectoryScan, Error>) {
+        lock.lock()
+        guard self.result == nil else {
+            lock.unlock()
+            return
+        }
+        self.result = result
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+    }
+}
+
+struct ModelDirectoryScan: Sendable {
+    let downloadedModels: [DownloadedModel]
+    let validationErrors: [String: String]
+    let unrecognizedFiles: [String]
+    let directoryError: String?
+}
+
+enum ModelDirectoryScanner {
+    static func scan(directory: URL, models: [WhisperModel]) -> ModelDirectoryScan {
+        let fileURLs: [URL]
+        do {
+            fileURLs = try FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            )
+        } catch {
+            return ModelDirectoryScan(
+                downloadedModels: [],
+                validationErrors: [:],
+                unrecognizedFiles: [],
+                directoryError: error.localizedDescription
+            )
+        }
+
+        var downloadedModels: [DownloadedModel] = []
+        var validationErrors: [String: String] = [:]
+        var unrecognizedFiles: [String] = []
+
+        for url in fileURLs where url.pathExtension == "bin" {
+            let name = url.deletingPathExtension().lastPathComponent
+            guard let model = models.first(where: { $0.name == name }) else {
+                unrecognizedFiles.append(url.lastPathComponent)
+                continue
+            }
+
+            do {
+                try ModelFileValidator.validate(fileAt: url, for: model)
+                downloadedModels.append(DownloadedModel(name: name, url: url))
+            } catch {
+                validationErrors[name] = error.localizedDescription
+            }
+        }
+
+        return ModelDirectoryScan(
+            downloadedModels: downloadedModels,
+            validationErrors: validationErrors,
+            unrecognizedFiles: unrecognizedFiles,
+            directoryError: nil
+        )
+    }
+}
+
+enum ModelDownloadError: LocalizedError {
+    case invalidURL(String)
+    case alreadyDownloading(String)
+    case invalidHTTPStatus(Int)
+    case responseSizeMismatch(expected: Int64, actual: Int64)
+    case missingTemporaryFile
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL(let url):
+            return "Invalid model download URL: \(url)"
+        case .alreadyDownloading(let name):
+            return "Model '\(name)' is already downloading."
+        case .invalidHTTPStatus(let status):
+            return "Model server returned HTTP \(status)."
+        case .responseSizeMismatch(let expected, let actual):
+            return "Model response size mismatch. Expected \(expected) bytes, received \(actual)."
+        case .missingTemporaryFile:
+            return "Model download finished without a temporary file."
+        }
+    }
+}
+
+enum ModelValidationError: LocalizedError, Equatable {
+    case sizeMismatch(expected: Int64, actual: Int64)
+    case checksumMismatch(expected: String, actual: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .sizeMismatch(let expected, let actual):
+            return "Model size mismatch. Expected \(expected) bytes, found \(actual)."
+        case .checksumMismatch(let expected, let actual):
+            return "Model checksum mismatch. Expected \(expected), found \(actual)."
+        }
+    }
+}
+
+enum ModelFileValidator {
+    private static let readChunkSize = 1_048_576
+
+    static func validateAsync(
+        fileAt url: URL,
+        for model: WhisperModel,
+        onHashChunk: (@Sendable () -> Void)? = nil
+    ) async throws {
+        let task = Task.detached(priority: .utility) {
+            try validate(
+                fileAt: url,
+                for: model,
+                checkingCancellation: true,
+                onHashChunk: onHashChunk
+            )
+        }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    static func validate(
+        fileAt url: URL,
+        for model: WhisperModel
+    ) throws {
+        try validate(
+            fileAt: url,
+            for: model,
+            checkingCancellation: false,
+            onHashChunk: nil
+        )
+    }
+
+    private static func validate(
+        fileAt url: URL,
+        for model: WhisperModel,
+        checkingCancellation: Bool,
+        onHashChunk: (@Sendable () -> Void)?
+    ) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let actualByteCount = (attributes[.size] as? NSNumber)?.int64Value ?? -1
+        guard actualByteCount == model.expectedByteCount else {
+            throw ModelValidationError.sizeMismatch(
+                expected: model.expectedByteCount,
+                actual: actualByteCount
+            )
+        }
+
+        let actualSHA256 = try sha256(
+            fileAt: url,
+            checkingCancellation: checkingCancellation,
+            onHashChunk: onHashChunk
+        )
+        guard actualSHA256 == model.sha256.lowercased() else {
+            throw ModelValidationError.checksumMismatch(
+                expected: model.sha256.lowercased(),
+                actual: actualSHA256
+            )
+        }
+    }
+
+    private static func sha256(
+        fileAt url: URL,
+        checkingCancellation: Bool,
+        onHashChunk: (@Sendable () -> Void)?
+    ) throws -> String {
+        let file = try FileHandle(forReadingFrom: url)
+        defer { try? file.close() }
+
+        var hasher = SHA256()
+        while let data = try file.read(upToCount: readChunkSize), !data.isEmpty {
+            onHashChunk?()
+            if checkingCancellation {
+                try Task.checkCancellation()
+            }
+            hasher.update(data: data)
+        }
+
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+enum ModelDownloadResponseValidator {
+    static func validate(_ response: URLResponse?, fileAt url: URL) throws {
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw ModelDownloadError.invalidHTTPStatus(status)
+        }
+
+        guard httpResponse.expectedContentLength > 0 else { return }
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let actualByteCount = (attributes[.size] as? NSNumber)?.int64Value ?? -1
+        guard actualByteCount == httpResponse.expectedContentLength else {
+            throw ModelDownloadError.responseSizeMismatch(
+                expected: httpResponse.expectedContentLength,
+                actual: actualByteCount
+            )
+        }
+    }
+}
+
 // MARK: - Model Downloader
 
 /// Apple-native download handler using URLSessionDownloadDelegate.
@@ -587,6 +978,12 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
     
     private var downloadSession: URLSession?
     private var currentProgress: Double = 0
+
+    private nonisolated let temporaryDirectory: URL
+
+    init(temporaryDirectory: URL) {
+        self.temporaryDirectory = temporaryDirectory
+    }
     
     /// Starts downloading from the given URL.
     /// Uses Apple's URLSession Wi-Fi-only configuration as a safety net.
@@ -648,24 +1045,28 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        
+        do {
+            try ModelDownloadResponseValidator.validate(downloadTask.response, fileAt: location)
+        } catch {
+            MainActor.assumeIsolated {
+                self.finish(with: nil, error: error)
+            }
+            return
+        }
+
         // Move to a safe location before the delegate method returns
         // (Apple deletes the temp file after this method returns)
-        let safeURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString + ".bin")
+        let safeURL = temporaryDirectory
+            .appendingPathComponent(".\(UUID().uuidString).partial")
         
         do {
             try FileManager.default.moveItem(at: location, to: safeURL)
             MainActor.assumeIsolated {
-                self.completionHandler?(safeURL, nil)
-                self.downloadSession?.finishTasksAndInvalidate()
-                self.downloadSession = nil
+                self.finish(with: safeURL, error: nil)
             }
         } catch {
             MainActor.assumeIsolated {
-                self.completionHandler?(nil, error)
-                self.downloadSession?.finishTasksAndInvalidate()
-                self.downloadSession = nil
+                self.finish(with: nil, error: error)
             }
         }
     }
@@ -678,11 +1079,16 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
         
         MainActor.assumeIsolated {
             if let error = error {
-                self.completionHandler?(nil, error)
+                self.finish(with: nil, error: error)
             }
-            
-            self.downloadSession?.finishTasksAndInvalidate()
-            self.downloadSession = nil
         }
+    }
+
+    private func finish(with url: URL?, error: Error?) {
+        guard let completionHandler else { return }
+        self.completionHandler = nil
+        completionHandler(url, error)
+        downloadSession?.finishTasksAndInvalidate()
+        downloadSession = nil
     }
 }

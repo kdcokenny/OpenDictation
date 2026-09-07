@@ -13,7 +13,9 @@ enum PredefinedModels {
             name: "ggml-tiny",
             displayName: "Tiny (Multilingual)",
             size: "75 MB",
-            downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
+            downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin",
+            expectedByteCount: 77_691_713,
+            sha256: "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
             isMultilingual: true,
             description: "Fastest. Works with all languages.",
             isBundled: true
@@ -25,7 +27,9 @@ enum PredefinedModels {
             name: "ggml-tiny.en",
             displayName: "Tiny (English)",
             size: "75 MB",
-            downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
+            downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en.bin",
+            expectedByteCount: 77_704_715,
+            sha256: "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
             isMultilingual: false,
             description: "Fastest. Optimized for English."
         ),
@@ -36,7 +40,9 @@ enum PredefinedModels {
             name: "ggml-base.en",
             displayName: "Balanced",
             size: "142 MB",
-            downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+            downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin",
+            expectedByteCount: 147_964_211,
+            sha256: "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
             isMultilingual: false,
             description: "Better accuracy. Good for most tasks."
         ),
@@ -47,7 +53,9 @@ enum PredefinedModels {
             name: "ggml-base",
             displayName: "Balanced",
             size: "142 MB",
-            downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+            downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin",
+            expectedByteCount: 147_951_465,
+            sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
             isMultilingual: true,
             description: "Better accuracy. Good for most tasks."
         ),
@@ -58,7 +66,9 @@ enum PredefinedModels {
             name: "ggml-large-v3-turbo-q5_0",
             displayName: "Best Quality",
             size: "547 MB",
-            downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+            downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin",
+            expectedByteCount: 574_041_195,
+            sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
             isMultilingual: true,
             description: "Best accuracy. Great for important documents."
         )

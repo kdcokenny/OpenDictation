@@ -1,4 +1,5 @@
 import Foundation
+import FluidAudio
 import os.log
 #if canImport(whisper)
 import whisper
@@ -12,8 +13,6 @@ actor WhisperContext {
     // MARK: - Properties
     
     private nonisolated(unsafe) var context: OpaquePointer?
-    private var languageCString: [CChar]?
-    private var promptCString: [CChar]?
     private var vadModelPath: String?
     
     private let logger = Logger.app(category: "WhisperContext")
@@ -81,7 +80,25 @@ actor WhisperContext {
     /// Performs full transcription on the provided audio samples.
     /// - Parameter samples: Float32 audio samples (16kHz, mono)
     /// - Returns: true if transcription succeeded, false otherwise
-    func fullTranscribe(samples: [Float]) -> Bool {
+    func fullTranscribe(samples: [Float]) async throws -> Bool {
+        let cancellationState = WhisperCancellationState()
+        return try await withTaskCancellationHandler {
+            if Task.isCancelled {
+                cancellationState.cancel()
+            }
+            return try runFullTranscription(
+                samples: samples,
+                cancellationState: cancellationState
+            )
+        } onCancel: {
+            cancellationState.cancel()
+        }
+    }
+
+    private func runFullTranscription(
+        samples: [Float],
+        cancellationState: WhisperCancellationState
+    ) throws -> Bool {
         guard let context = context else {
             logger.error("No whisper context available")
             return false
@@ -89,24 +106,22 @@ actor WhisperContext {
         
         let maxThreads = max(1, min(8, cpuCount() - 2))
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
-        
-        // Set language
-        if language != "auto" {
-            languageCString = Array(language.utf8CString)
-            params.language = languageCString?.withUnsafeBufferPointer { $0.baseAddress }
-        } else {
-            languageCString = nil
-            params.language = nil
+
+        // whisper.cpp reads these pointers for the duration of whisper_full.
+        // Own their allocations until this function returns.
+        let languageBuffer = !language.isEmpty && language != "auto"
+            ? OwnedCString(language) : nil
+        let promptBuffer = initialPrompt.flatMap { prompt in
+            prompt.isEmpty ? nil : OwnedCString(prompt)
         }
-        
-        // Set initial prompt
-        if let prompt = initialPrompt, !prompt.isEmpty {
-            promptCString = Array(prompt.utf8CString)
-            params.initial_prompt = promptCString?.withUnsafeBufferPointer { $0.baseAddress }
-        } else {
-            promptCString = nil
-            params.initial_prompt = nil
+        let vadPathBuffer = vadModelPath.map(OwnedCString.init)
+        defer {
+            languageBuffer?.deallocate()
+            promptBuffer?.deallocate()
+            vadPathBuffer?.deallocate()
         }
+        params.language = languageBuffer.map { UnsafePointer($0.pointer) }
+        params.initial_prompt = promptBuffer.map { UnsafePointer($0.pointer) }
         
         // Configure parameters
         params.print_realtime = false
@@ -119,13 +134,28 @@ actor WhisperContext {
         params.no_context = true
         params.single_segment = false
         params.temperature = temperature
+
+        let cancellationPointer = Unmanaged.passRetained(cancellationState).toOpaque()
+        defer {
+            Unmanaged<WhisperCancellationState>
+                .fromOpaque(cancellationPointer)
+                .release()
+        }
+        params.abort_callback_user_data = cancellationPointer
+        params.abort_callback = { userData in
+            guard let userData else { return false }
+            let state = Unmanaged<WhisperCancellationState>
+                .fromOpaque(userData)
+                .takeUnretainedValue()
+            return state.isCancelled
+        }
         
         whisper_reset_timings(context)
         
         // Configure VAD if model is available
-        if let vadModelPath = self.vadModelPath {
+        if let vadPathBuffer {
             params.vad = true
-            params.vad_model_path = (vadModelPath as NSString).utf8String
+            params.vad_model_path = UnsafePointer(vadPathBuffer.pointer)
             
             var vadParams = whisper_vad_default_params()
             vadParams.threshold = 0.50
@@ -143,17 +173,14 @@ actor WhisperContext {
         }
         
         // Run transcription
-        var success = true
-        samples.withUnsafeBufferPointer { samplesBuffer in
-            if whisper_full(context, params, samplesBuffer.baseAddress, Int32(samplesBuffer.count)) != 0 {
-                logger.error("Failed to run whisper_full")
-                success = false
-            }
+        let success = whisper_full(context, params, samples, Int32(samples.count)) == 0
+        if !success {
+            logger.error("Failed to run whisper_full")
         }
         
-        // Clear C strings
-        languageCString = nil
-        promptCString = nil
+        if cancellationState.isCancelled {
+            throw CancellationError()
+        }
         
         return success
     }
@@ -180,8 +207,6 @@ actor WhisperContext {
             whisper_free(context)
             self.context = nil
         }
-        languageCString = nil
-        promptCString = nil
         logger.debug("Whisper context resources released")
     }
     
@@ -221,31 +246,58 @@ private func cpuCount() -> Int {
     ProcessInfo.processInfo.processorCount
 }
 
-// MARK: - Audio Loading
+private struct OwnedCString {
+    let pointer: UnsafeMutablePointer<CChar>
+    private let count: Int
 
-/// Loads audio samples from a WAV file.
-/// Assumes 16kHz, 16-bit PCM mono format (as output by RecordingService).
-/// Adapted from VoiceInk/Services/LocalTranscriptionService.swift
-func loadAudioSamples(from url: URL) throws -> [Float] {
-    let data = try Data(contentsOf: url)
-    
-    // Minimum size: 44-byte header + at least some audio data
-    guard data.count > 44 else {
-        throw WhisperError.audioLoadFailed
-    }
-    
-    // Skip 44-byte WAV header, read 16-bit PCM samples
-    // RecordingService outputs 16kHz mono 16-bit PCM - exactly what whisper.cpp expects
-    let floats = stride(from: 44, to: data.count, by: 2).map { offset -> Float in
-        data[offset..<offset + 2].withUnsafeBytes {
-            let short = Int16(littleEndian: $0.load(as: Int16.self))
-            return max(-1.0, min(Float(short) / 32767.0, 1.0))
+    init(_ string: String) {
+        let bytes = Array(string.utf8CString)
+        count = bytes.count
+        pointer = .allocate(capacity: count)
+        bytes.withUnsafeBufferPointer { buffer in
+            pointer.initialize(from: buffer.baseAddress!, count: buffer.count)
         }
     }
-    
-    guard !floats.isEmpty else {
+
+    func deallocate() {
+        pointer.deinitialize(count: count)
+        pointer.deallocate()
+    }
+}
+
+/// Thread-safe state shared with whisper.cpp's C abort callback.
+/// `runFullTranscription` retains it until `whisper_full` returns.
+final class WhisperCancellationState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+}
+
+// MARK: - Audio Loading
+
+/// Loads any AVFoundation-supported audio file as 16 kHz mono Float32 samples.
+func loadAudioSamples(from url: URL) throws -> [Float] {
+    let samples: [Float]
+    do {
+        samples = try AudioConverter().resampleAudioFile(url)
+    } catch {
         throw WhisperError.audioLoadFailed
     }
-    
-    return floats
+
+    guard !samples.isEmpty, samples.allSatisfy({ $0.isFinite }) else {
+        throw WhisperError.audioLoadFailed
+    }
+
+    return samples
 }
