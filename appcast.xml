@@ -221,5 +221,13 @@
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <enclosure url="https://github.com/kdcokenny/OpenDictation/releases/download/v1.2.0/OpenDictation.dmg" sparkle:edSignature="g6Rsolr2Nh+RkHeSydgzSoGciuMZArnhcAOQlnva5I1Y8TdaFeaxQQytDWG2IZQrNF0VLoRaVVTDQ8qS8gCHAw==" length="90524069" type="application/octet-stream" />
     </item>
+    <item>
+      <title>Version 1.2.1</title>
+      <pubDate>Tue, 08 Sep 2026 00:08:04 +0000</pubDate>
+      <sparkle:version>36</sparkle:version>
+      <sparkle:shortVersionString>1.2.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/kdcokenny/OpenDictation/releases/download/v1.2.1/OpenDictation.dmg" sparkle:edSignature="WU76TmQXRFqweLmhVpM95eVCjhLgmXmGeTpmyJdTgpKI3mAPMuMTWGtWK+t20LscH7+xM2eq2QlkakiftugVBQ==" length="90524328" type="application/octet-stream" />
+    </item>
   </channel>
 </rss>
